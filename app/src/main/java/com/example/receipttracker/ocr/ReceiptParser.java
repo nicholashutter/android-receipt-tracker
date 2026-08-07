@@ -396,4 +396,79 @@ public final class ReceiptParser {
         }
         return null;
     }
+
+    // ---------- auto-pick "the circled total" ----------
+
+    /**
+     * Pick the most likely "circled" number on a receipt. This is what
+     * the user would have circled with their pen — so the heuristic
+     * favours the number on a TOTAL-keyword line first, then falls
+     * back to the largest number in the bottom half (the part of the
+     * receipt that contains the totals block on most layouts), then
+     * the largest number on the whole receipt.
+     *
+     * <p>Returns null if the input list is empty.</p>
+     *
+     * <p>Why this exists: the user shouldn't have to re-pick the total
+     * the OCR almost certainly got right. We treat the OCR's first
+     * guess as the default and let the user correct it.</p>
+     */
+    @Nullable
+    public static DetectedNumber pickCircledCandidate(List<DetectedNumber> numbers) {
+        if (numbers == null || numbers.isEmpty()) {
+            Logger.w("Parser", "pickCircledCandidate: no numbers to choose from");
+            return null;
+        }
+
+        // Priority 1: a number on a TOTAL keyword line. Real receipts
+        // almost always print "TOTAL  47.83" with the total number
+        // on the same line, and that's also what a user circles 90%
+        // of the time.
+        for (DetectedNumber n : numbers) {
+            if (n.keyword != null && isTotalKeyword(n.keyword)) {
+                Logger.i("Parser", "pickCircledCandidate: TOTAL-line match -> $"
+                        + n.value + " (line " + n.lineIndex + " kw=" + n.keyword + ")");
+                return n;
+            }
+        }
+
+        // Priority 2: the largest number in the bottom half of the
+        // receipt (the totals block lives at the bottom in 99% of
+        // printed receipts). Excludes non-decimal noise like
+        // "TxnID: 348332" by only looking at lines that pass
+        // PriceClassifier (handled in the verifier pass).
+        int maxLine = 0;
+        for (DetectedNumber n : numbers) {
+            if (n.lineIndex > maxLine) maxLine = n.lineIndex;
+        }
+        int half = maxLine / 2;
+        DetectedNumber bottomLargest = null;
+        for (DetectedNumber n : numbers) {
+            if (n.lineIndex < half) continue;
+            if (bottomLargest == null || n.value > bottomLargest.value) {
+                bottomLargest = n;
+            }
+        }
+        if (bottomLargest != null) {
+            Logger.i("Parser", "pickCircledCandidate: bottom-half largest -> $"
+                    + bottomLargest.value + " (line " + bottomLargest.lineIndex + ")");
+            return bottomLargest;
+        }
+
+        // Priority 3: the largest number on the whole receipt. Last
+        // resort — gives the user a defensible default.
+        DetectedNumber largest = numbers.get(0);
+        for (DetectedNumber n : numbers) {
+            if (n.value > largest.value) largest = n;
+        }
+        Logger.i("Parser", "pickCircledCandidate: receipt-wide largest -> $"
+                + largest.value + " (line " + largest.lineIndex + ")");
+        return largest;
+    }
+
+    private static boolean isTotalKeyword(String kw) {
+        return "total".equals(kw) || "amount".equals(kw)
+                || "balance".equals(kw) || "due".equals(kw)
+                || "sum".equals(kw) || "to pay".equals(kw);
+    }
 }

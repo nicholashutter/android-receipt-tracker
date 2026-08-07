@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased] — 2026-08-07
 
 ### Added
+- **OCR auto-picks the total.** `ReceiptParser.pickCircledCandidate(numbers)`
+  picks the most likely "circled" number on a freshly scanned receipt
+  using a three-tier heuristic: a number on a TOTAL-keyword line
+  first, then the largest number in the bottom half of the receipt,
+  then the largest number overall. `EditReceiptActivity` runs this
+  on every new-receipt open, runs the verifier, and pre-fills the
+  amount field with the recommended total. The user can still edit
+  the amount as a correction, or tap "Re-pick the total" (an
+  outlined-button override, no longer the primary action) to pick a
+  different number from the detected list. The verdict panel
+  renders with the header "Auto-picked by OCR" so it's clear where
+  the value came from.
+
+### Changed
+- `EditReceiptActivity` no longer asks the user to mark a number on
+  every scan. The flow is now: scan → editor opens with amount
+  pre-filled → user confirms by tapping Save (or edits / re-picks if
+  needed). The "Pick & verify the total" filled button is now an
+  outlined "Re-pick the total" override.
+- `TestPipelineActivity.openInEditor()` no longer pre-inserts a
+  receipt row. It now passes the OCR'd values as a new-receipt
+  intent, which lets the editor's auto-pick path fire.
+
+## [0.3.0] — 2026-08-07
+
+### Added
 - **Budgets (running budget per category).** Users can create multiple named budgets
   (e.g. "Groceries August", "Travel"), each with a max amount. Exactly one is
   active at a time. The active budget shows up on the main screen as a

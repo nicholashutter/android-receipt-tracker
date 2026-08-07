@@ -133,7 +133,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="12dp"
-            android:text="Tap to circle a number on the receipt — we'll cross-check it against the entered amount and the line items."
+            android:text="OCR picked the total. Edit the amount above to correct, or re-pick if it got the wrong one."
             android:textColor="@color/on_surface_variant"
             android:textSize="12sp" />
 
@@ -142,11 +142,11 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:padding="14dp"
-            android:text="Pick &amp; verify the total"
+            android:text="Re-pick the total"
             android:textSize="15sp"
+            style="@style/Widget.Material3.Button.OutlinedButton"
             app:icon="@drawable/ic_verified"
             app:iconGravity="textStart"
-            app:backgroundTint="@color/secondary"
             app:cornerRadius="16dp" />
 
         <!-- Verdict panel: bg toggled in code between ok/warn/err drawables. -->

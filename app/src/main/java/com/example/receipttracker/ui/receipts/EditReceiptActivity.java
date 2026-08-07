@@ -110,6 +110,16 @@ public class EditReceiptActivity extends AppCompatActivity {
             tvRawText.setText(rawText);
         }
 
+        // Auto-pick the "circled" total and run the verifier on it.
+        // The whole point of OCR is that we don't make the user re-pick
+        // the total — the activity should arrive with a reasonable
+        // amount pre-filled, the verdict panel visible, and a manual
+        // override button (btnMarkTotal) for the cases where the
+        // auto-pick is wrong.
+        if (existingId < 0 && rawText != null && !rawText.isEmpty()) {
+            autoPickAndVerify();
+        }
+
         btnSave.setOnClickListener(v -> {
             Logger.i("Edit", "btn_save clicked: merchant='" + etMerchant.getText()
                     + "', amount='" + etAmount.getText() + "'");
@@ -230,15 +240,43 @@ public class EditReceiptActivity extends AppCompatActivity {
 
     private List<DetectedNumber> cachedNumbers = new ArrayList<>();
 
+    /**
+     * Auto-pick the "circled" number on a freshly scanned receipt and
+     * run the verifier on it. Fills the amount field with the
+     * recommended total and renders the verdict panel, so the activity
+     * opens looking like the user already picked the right number.
+     * The user can edit the amount or tap "Re-pick" to override.
+     */
+    private void autoPickAndVerify() {
+        if (rawText == null || rawText.isEmpty()) return;
+        Logger.section("AUTO-PICK TOTAL");
+        cachedNumbers = ReceiptParser.extractAllNumbers(rawText);
+        if (cachedNumbers.isEmpty()) {
+            Logger.w("Edit", "autoPick: parser found 0 numbers; nothing to auto-pick");
+            return;
+        }
+        DetectedNumber picked = ReceiptParser.pickCircledCandidate(cachedNumbers);
+        if (picked == null) {
+            Logger.w("Edit", "autoPick: pickCircledCandidate returned null");
+            return;
+        }
+        Logger.i("Edit", "autoPick: chose $" + picked.value
+                + " from line " + picked.lineIndex
+                + " (keyword=" + picked.keyword + ")");
+        runVerifier(picked, /*autoPicked=*/true);
+    }
+
     private void onMarkTotalClicked() {
-        Logger.section("MARK TOTAL");
-        Logger.i("Edit", "btn_mark_total clicked");
+        Logger.section("RE-PICK TOTAL");
+        Logger.i("Edit", "btn_mark_total clicked (manual override)");
         if (rawText == null || rawText.isEmpty()) {
             Logger.w("Edit", "No raw OCR text available; cannot enumerate numbers");
             Toast.makeText(this, "No OCR text on this receipt", Toast.LENGTH_SHORT).show();
             return;
         }
-        cachedNumbers = ReceiptParser.extractAllNumbers(rawText);
+        if (cachedNumbers.isEmpty()) {
+            cachedNumbers = ReceiptParser.extractAllNumbers(rawText);
+        }
         if (cachedNumbers.isEmpty()) {
             Logger.w("Edit", "Parser found 0 numbers in raw text");
             Toast.makeText(this, "Parser found no numbers", Toast.LENGTH_SHORT).show();
@@ -252,7 +290,7 @@ public class EditReceiptActivity extends AppCompatActivity {
             labels[i] = String.format(Locale.US, "$%.2f%s   [line %d]  %s",
                     n.value, kw, n.lineIndex, trim(n.line, 60));
         }
-        Logger.i("Edit", "Showing " + labels.length + " numbers to user");
+        Logger.i("Edit", "Showing " + labels.length + " numbers to user (override)");
         new AlertDialog.Builder(this)
                 .setTitle(R.string.action_pick_total)
                 .setItems(labels, (dialog, which) -> {
@@ -260,22 +298,23 @@ public class EditReceiptActivity extends AppCompatActivity {
                     Logger.i("Edit", "User picked value=" + picked.value
                             + " from line " + picked.lineIndex
                             + " (keyword=" + picked.keyword + ")");
-                    runVerifier(picked);
+                    runVerifier(picked, /*autoPicked=*/false);
                 })
                 .setNegativeButton(android.R.string.cancel, (d, w) -> {
-                    Logger.i("Edit", "Mark-total dialog cancelled");
+                    Logger.i("Edit", "Re-pick dialog cancelled");
                     d.dismiss();
                 })
                 .show();
     }
 
-    private void runVerifier(DetectedNumber picked) {
+    private void runVerifier(DetectedNumber picked, boolean autoPicked) {
         final double entered = parseAmount();
-        Logger.i("Edit", "runVerifier: entered=" + entered + ", picked=" + picked.value);
+        Logger.i("Edit", "runVerifier: entered=" + entered + ", picked=" + picked.value
+                + ", autoPicked=" + autoPicked);
         exec.diskIO().execute(() -> {
             TotalVerifier.Result r = TotalVerifier.verify(picked.value, cachedNumbers, entered);
             runOnUiThread(() -> {
-                renderVerifier(picked, r, entered);
+                renderVerifier(picked, r, entered, autoPicked);
                 // Capture the verified total so save can offer to add to a budget.
                 lastVerifiedTotal = r.recommendedTotal;
                 budgetPromptHandled = false;
@@ -283,11 +322,19 @@ public class EditReceiptActivity extends AppCompatActivity {
         });
     }
 
-    private void renderVerifier(DetectedNumber picked, TotalVerifier.Result r, double entered) {
+    private void renderVerifier(DetectedNumber picked, TotalVerifier.Result r,
+                                double entered, boolean autoPicked) {
         applyVerdictBackground(r);
         StringBuilder body = new StringBuilder();
-        body.append(String.format(Locale.US,
-                "Marked:  $%.2f  (line %d: %s)%n", picked.value, picked.lineIndex, trim(picked.line, 50)));
+        if (autoPicked) {
+            body.append(String.format(Locale.US,
+                    "Auto-picked by OCR: $%.2f  (line %d: %s)%n",
+                    picked.value, picked.lineIndex, trim(picked.line, 50)));
+        } else {
+            body.append(String.format(Locale.US,
+                    "Marked:  $%.2f  (line %d: %s)%n",
+                    picked.value, picked.lineIndex, trim(picked.line, 50)));
+        }
         if (entered > 0) {
             body.append(String.format(Locale.US, "Entered: $%.2f%n", entered));
         }
@@ -313,10 +360,16 @@ public class EditReceiptActivity extends AppCompatActivity {
         tvVerifier.setVisibility(View.VISIBLE);
         // Auto-apply the verifier's recommended total
         etAmount.setText(String.format(Locale.US, "%.2f", r.recommendedTotal));
-        String toast = String.format(Locale.US,
-                "Total: $%.2f  (%.0f%%, P(total)=%.2f, source=%s)",
-                r.recommendedTotal, r.confidence * 100, r.candidateProbability, r.recommendedSource);
-        Toast.makeText(this, toast, Toast.LENGTH_LONG).show();
+        // For auto-pick, the amount was pre-filled, so no toast — the
+        // verdict panel communicates the result. For manual picks
+        // (the user just tapped a number in the dialog) a toast is
+        // still useful confirmation.
+        if (!autoPicked) {
+            String toast = String.format(Locale.US,
+                    "Total: $%.2f  (%.0f%%, P(total)=%.2f, source=%s)",
+                    r.recommendedTotal, r.confidence * 100, r.candidateProbability, r.recommendedSource);
+            Toast.makeText(this, toast, Toast.LENGTH_LONG).show();
+        }
     }
 
     /**
@@ -371,7 +424,7 @@ public class EditReceiptActivity extends AppCompatActivity {
                 }
                 Logger.i("Edit", "save-time sanity: " + msg);
                 // Show the verdict in the on-screen panel too, so the user sees the math.
-                renderVerifier(candidate, r, entered);
+                renderVerifier(candidate, r, entered, /*autoPicked=*/false);
                 Toast.makeText(this, msg.toString(), Toast.LENGTH_LONG).show();
                 // Save regardless — the sanity check is advisory, not blocking.
                 saveReceiptInternal();

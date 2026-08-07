@@ -78,22 +78,18 @@ public class TestPipelineActivity extends Activity {
             Toast.makeText(this, "Run the pipeline first", Toast.LENGTH_SHORT).show();
             return;
         }
-        // Persist as a receipt row, then launch the editor with the new id.
-        final Receipt r = new Receipt();
-        r.merchant = lastMerchant;
-        r.amount = lastAmount;
-        r.dateMillis = lastDateMillis;
-        r.photoPath = lastSavedPath;
-        r.rawText = lastRawText;
-        r.createdAt = System.currentTimeMillis();
-        AppExecutors.get().diskIO().execute(() -> {
-            long id = AppDatabase.get(this).receiptDao().insert(r);
-            Logger.i("TestPipe", "Inserted receipt id=" + id + " for editor");
-            runOnUiThread(() -> {
-                Intent i = new Intent(this, EditReceiptActivity.class);
-                i.putExtra(EditReceiptActivity.EXTRA_RECEIPT_ID, id);
-                startActivity(i);
-            });
+        // Don't pre-insert the receipt. The editor is a new-receipt session
+        // and will insert on save, with auto-pick firing on the OCR text
+        // we pass in. (Pre-inserting made the editor think it was editing
+        // an existing row, which skipped the auto-pick path.)
+        runOnUiThread(() -> {
+            Intent i = new Intent(this, EditReceiptActivity.class);
+            i.putExtra(EditReceiptActivity.EXTRA_PHOTO_PATH, lastSavedPath);
+            i.putExtra(EditReceiptActivity.EXTRA_RAW_TEXT, lastRawText);
+            i.putExtra(EditReceiptActivity.EXTRA_MERCHANT, lastMerchant);
+            i.putExtra(EditReceiptActivity.EXTRA_AMOUNT, lastAmount);
+            i.putExtra(EditReceiptActivity.EXTRA_DATE_MILLIS, lastDateMillis);
+            startActivity(i);
         });
     }
 

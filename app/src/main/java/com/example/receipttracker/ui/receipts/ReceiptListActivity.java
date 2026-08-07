@@ -1,13 +1,17 @@
 package com.example.receipttracker.ui.receipts;
 
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.os.Bundle;
 import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
@@ -17,48 +21,126 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.example.receipttracker.R;
 import com.example.receipttracker.data.AppDatabase;
 import com.example.receipttracker.data.Receipt;
+import com.example.receipttracker.data.ReceiptDao;
 import com.example.receipttracker.log.Logger;
 import com.example.receipttracker.ocr.ReceiptImageStore;
+import com.example.receipttracker.util.AppExecutors;
 import com.example.receipttracker.util.MoneyUtils;
 
 import java.io.File;
+import java.util.Collections;
 import java.util.List;
 
 public class ReceiptListActivity extends AppCompatActivity {
 
+    private static final String TAG = "ReceiptList";
+    private static final int MENU_SHOW_DELETED = 1;
+    private static final int MENU_CLEAR_ALL = 2;
+    private static final int MENU_RESTORE_ALL = 3;
+
     private RecyclerView rv;
     private View tvEmpty;
     private ReceiptAdapter adapter;
+    private ReceiptDao dao;
+    private final AppExecutors exec = AppExecutors.get();
+    private boolean showDeleted = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        Logger.i("ReceiptList", "onCreate");
+        Logger.i(TAG, "onCreate");
         setContentView(R.layout.activity_receipt_list);
         rv = findViewById(R.id.rv);
         tvEmpty = findViewById(R.id.tv_empty);
         rv.setLayoutManager(new LinearLayoutManager(this));
         adapter = new ReceiptAdapter();
         rv.setAdapter(adapter);
+        dao = AppDatabase.get(this).receiptDao();
+        // The user can toggle "show deleted" via the menu. In both modes
+        // we re-observe the right query and let the adapter show the right
+        // empty state.
+        observeCurrent();
+    }
 
-        // LiveData: re-renders automatically on every insert/update/delete. No onResume hook.
-        AppDatabase.get(this).receiptDao().getAllLive().observe(this, this::render);
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        menu.add(0, MENU_SHOW_DELETED, 0, showDeleted ? "Hide deleted" : "Show deleted");
+        if (showDeleted) {
+            menu.add(0, MENU_RESTORE_ALL, 1, "Restore all");
+        } else {
+            menu.add(0, MENU_CLEAR_ALL, 1, "Clear all");
+        }
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(@NonNull MenuItem item) {
+        int id = item.getItemId();
+        if (id == MENU_SHOW_DELETED) {
+            showDeleted = !showDeleted;
+            invalidateOptionsMenu();
+            observeCurrent();
+            return true;
+        } else if (id == MENU_CLEAR_ALL) {
+            confirmClearAll();
+            return true;
+        } else if (id == MENU_RESTORE_ALL) {
+            confirmRestoreAll();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+
+    private void observeCurrent() {
+        // Always re-observe from a fresh LiveData. Room gives us a new
+        // LiveData instance per call, so removeObservers first.
+        dao.getAllActiveLive().removeObservers(this);
+        dao.getAllLive().removeObservers(this);
+        if (showDeleted) {
+            dao.getAllLive().observe(this, this::render);
+        } else {
+            dao.getAllActiveLive().observe(this, this::render);
+        }
     }
 
     private void render(List<Receipt> data) {
         int n = data == null ? 0 : data.size();
-        Logger.i("ReceiptList", "render: " + n + " receipts");
+        Logger.i(TAG, "render: " + n + " receipts (showDeleted=" + showDeleted + ")");
         adapter.set(data);
         boolean empty = data == null || data.isEmpty();
         tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
         rv.setVisibility(empty ? View.GONE : View.VISIBLE);
     }
 
+    private void confirmClearAll() {
+        exec.diskIO().execute(() -> {
+            int n = dao.softDeleteAll(System.currentTimeMillis());
+            Logger.i(TAG, "softDeleteAll -> " + n);
+        });
+        Toast.makeText(this, "All receipts cleared from view", Toast.LENGTH_SHORT).show();
+    }
+
+    private void confirmRestoreAll() {
+        new AlertDialog.Builder(this)
+                .setTitle("Restore all deleted receipts?")
+                .setMessage("This brings every cleared receipt back into the main list.")
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton("Restore", (d, w) -> {
+                    exec.diskIO().execute(() -> {
+                        int n = dao.restoreAll();
+                        Logger.i(TAG, "restoreAll -> " + n);
+                    });
+                })
+                .show();
+    }
+
+    // ============ adapter ============
+
     class ReceiptAdapter extends RecyclerView.Adapter<ReceiptAdapter.VH> {
-        private List<Receipt> data = java.util.Collections.emptyList();
+        private List<Receipt> data = Collections.emptyList();
 
         void set(List<Receipt> d) {
-            this.data = d == null ? java.util.Collections.emptyList() : d;
+            this.data = d == null ? Collections.emptyList() : d;
             notifyDataSetChanged();
         }
 
@@ -75,14 +157,26 @@ public class ReceiptListActivity extends AppCompatActivity {
             h.merchant.setText(r.merchant == null ? "(no merchant)" : r.merchant);
             h.date.setText(MoneyUtils.formatDate(r.dateMillis));
             h.amount.setText(MoneyUtils.format(r.amount));
-            if (r.matchGroupId != null) {
+            boolean deleted = r.deletedAt != null;
+            if (deleted) {
+                h.status.setText("DELETED");
+                h.status.setBackgroundResource(R.drawable.bg_chip_warning);
+                h.status.setTextColor(getColor(R.color.on_warning_container));
+                h.merchant.setAlpha(0.5f);
+                h.amount.setAlpha(0.5f);
+            } else if (r.matchGroupId != null) {
                 h.status.setText(R.string.receipt_match_status_matched);
-                h.status.setTextColor(getColor(R.color.ok));
+                h.status.setBackgroundResource(R.drawable.bg_chip_success);
+                h.status.setTextColor(getColor(R.color.on_success_container));
+                h.merchant.setAlpha(1f);
+                h.amount.setAlpha(1f);
             } else {
                 h.status.setText(R.string.receipt_match_status_unmatched);
-                h.status.setTextColor(getColor(R.color.warn));
+                h.status.setBackgroundResource(R.drawable.bg_chip_primary);
+                h.status.setTextColor(getColor(R.color.on_primary_container));
+                h.merchant.setAlpha(1f);
+                h.amount.setAlpha(1f);
             }
-            // Thumbnail - best effort
             if (r.photoPath != null && new File(r.photoPath).exists()) {
                 Bitmap bmp = ReceiptImageStore.decodeSampled(r.photoPath, 256, 256);
                 if (bmp != null) h.thumb.setImageBitmap(bmp);
@@ -91,16 +185,50 @@ public class ReceiptListActivity extends AppCompatActivity {
                 h.thumb.setImageDrawable(null);
             }
             h.itemView.setOnClickListener(v -> {
-                Intent i = new Intent(ReceiptListActivity.this, EditReceiptActivity.class);
-                i.putExtra(EditReceiptActivity.EXTRA_RECEIPT_ID, r.id);
-                startActivity(i);
+                if (deleted) {
+                    // Offer restore instead of opening the editor on a deleted row.
+                    new AlertDialog.Builder(ReceiptListActivity.this)
+                            .setTitle("Restore receipt?")
+                            .setMessage("Bring '" + (r.merchant == null ? "(no merchant)" : r.merchant)
+                                    + "' back to the active list?")
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .setPositiveButton("Restore", (d, w) -> {
+                                exec.diskIO().execute(() -> {
+                                    dao.restore(r.id);
+                                    Logger.i(TAG, "restored receipt id=" + r.id);
+                                });
+                            })
+                            .setNeutralButton("Delete forever", (d, w) -> {
+                                new AlertDialog.Builder(ReceiptListActivity.this)
+                                        .setTitle("Delete forever?")
+                                        .setMessage("This will permanently remove the receipt and its photo.")
+                                        .setNegativeButton(android.R.string.cancel, null)
+                                        .setPositiveButton("Delete", (d2, w2) -> {
+                                            exec.diskIO().execute(() -> {
+                                                if (r.photoPath != null) {
+                                                    File f = new File(r.photoPath);
+                                                    if (f.exists()) f.delete();
+                                                }
+                                                dao.delete(r);
+                                                Logger.i(TAG, "hard-deleted receipt id=" + r.id);
+                                            });
+                                        })
+                                        .show();
+                            })
+                            .show();
+                } else {
+                    Intent i = new Intent(ReceiptListActivity.this, EditReceiptActivity.class);
+                    i.putExtra(EditReceiptActivity.EXTRA_RECEIPT_ID, r.id);
+                    startActivity(i);
+                }
             });
         }
 
         @Override public int getItemCount() { return data.size(); }
 
         class VH extends RecyclerView.ViewHolder {
-            final ImageView thumb; final TextView merchant, date, status, amount;
+            final ImageView thumb;
+            final TextView merchant, date, status, amount;
             VH(View v) {
                 super(v);
                 thumb = v.findViewById(R.id.iv_thumb);

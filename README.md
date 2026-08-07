@@ -14,6 +14,15 @@ Everything happens on the device — no cloud OCR, no third-party receipt APIs, 
   2. **LinearLearner** (aka TotalLearner) — binary logistic regression that, given only the surviving prices, scores each one for P(is the real total) based on `hasTotalKeyword`, `hasComponentKeyword`, `isLargest`, `lineInBottomHalf`, `hasDecimal`, `belowSubtotal`, `closeToSubPlusTax`, `looksLikeDate`, `looksLikeCode`.
 - **Entered-vs-circled cross-check + sub+tax sanity check.** When the user marks a number AND types an amount, the verifier runs the classifier on both, compares them to the heuristic `subtotal+tax+tip` prediction, and picks the winner via 3-way majority vote. The "source" of the recommendation (`circled`, `entered`, `model-best`, `sanity-wins`, `model+sanity`) is surfaced in the UI.
 - **Manual bank-transaction entry** (no Plaid/CSV/OFX) plus an automatic matcher that suggests pairings between entered transactions and saved receipts.
+- **Running budgets (multiple named, exactly one active).** Create as many budgets
+  as you want ("Groceries August", "Travel", "Coffee"), each with a cap. The
+  active budget shows up on the main screen as a live progress card. When you
+  save a receipt with a verified total, a one-tap dialog adds it to the active
+  budget (or skip / choose a different one). Soft-delete a budget to remove it
+  from the list without losing the linked receipts.
+- **Soft-delete receipts (recoverable).** "Clear all" hides every receipt from
+  the list without deleting the files. Toggle "Show deleted" in the receipt
+  list menu to see them, tap one to restore or permanently delete.
 - **JSON + JPEG export** of every receipt.
 - **In-app log viewer** that tails a rolling 5MB log file at `/data/data/com.example.receipttracker/files/logs/app.log`.
 - **Debug `TestPipelineActivity`** (`adb shell am start -n com.example.receipttracker/.ui.debug.TestPipelineActivity --es extra_image_path /data/.../receipt.jpg`) that runs the full pipeline and dumps intermediate state into the log so the two classifiers can be inspected from outside the app.

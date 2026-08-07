@@ -15,6 +15,8 @@ import androidx.appcompat.app.AppCompatActivity;
 import com.example.receipttracker.R;
 import com.example.receipttracker.data.AppDatabase;
 import com.example.receipttracker.data.BankTransaction;
+import com.example.receipttracker.data.Budget;
+import com.example.receipttracker.data.BudgetDao;
 import com.example.receipttracker.data.Receipt;
 import com.example.receipttracker.data.ReceiptDao;
 import com.example.receipttracker.log.Logger;
@@ -53,6 +55,11 @@ public class EditReceiptActivity extends AppCompatActivity {
     private String rawText;
     private long dateMillis = System.currentTimeMillis();
     private boolean showingRaw = false;
+
+    // The amount the user just verified via "Pick & verify". When set and a
+    // budget is active, we prompt to add the receipt to that budget on save.
+    private Double lastVerifiedTotal = null;
+    private boolean budgetPromptHandled = false;
 
     private final AppExecutors exec = AppExecutors.get();
 
@@ -267,7 +274,12 @@ public class EditReceiptActivity extends AppCompatActivity {
         Logger.i("Edit", "runVerifier: entered=" + entered + ", picked=" + picked.value);
         exec.diskIO().execute(() -> {
             TotalVerifier.Result r = TotalVerifier.verify(picked.value, cachedNumbers, entered);
-            runOnUiThread(() -> renderVerifier(picked, r, entered));
+            runOnUiThread(() -> {
+                renderVerifier(picked, r, entered);
+                // Capture the verified total so save can offer to add to a budget.
+                lastVerifiedTotal = r.recommendedTotal;
+                budgetPromptHandled = false;
+            });
         });
     }
 
@@ -369,7 +381,81 @@ public class EditReceiptActivity extends AppCompatActivity {
 
     private void saveReceipt() {
         if (!validate()) return;
+        // If the user verified a total via "Pick & verify" and a budget is
+        // active, prompt to add this receipt to that budget. Skip the prompt
+        // if we already asked (e.g. sanity check re-runs renderVerifier).
+        if (lastVerifiedTotal != null && !budgetPromptHandled) {
+            exec.diskIO().execute(() -> {
+                Budget active = AppDatabase.get(EditReceiptActivity.this)
+                        .budgetDao().getActive();
+                runOnUiThread(() -> {
+                    if (active == null) {
+                        runSanityCheckBeforeSave();
+                    } else {
+                        showBudgetPrompt(active);
+                    }
+                });
+            });
+            return;
+        }
         runSanityCheckBeforeSave();
+    }
+
+    private void showBudgetPrompt(Budget active) {
+        double total = parseAmount();
+        String msg = String.format(Locale.US,
+                "Add $%.2f to '%s' budget? (%.0f%% used, %s cap)",
+                total, active.name,
+                active.maxAmount > 0 ? Math.min(100, total * 100.0 / active.maxAmount) : 0,
+                MoneyUtils.format(active.maxAmount));
+        new AlertDialog.Builder(this)
+                .setTitle("Add to budget")
+                .setMessage(msg)
+                .setPositiveButton("Add", (d, w) -> {
+                    budgetPromptHandled = true;
+                    pendingBudgetId = active.id;
+                    runSanityCheckBeforeSave();
+                })
+                .setNegativeButton("Skip", (d, w) -> {
+                    budgetPromptHandled = true;
+                    runSanityCheckBeforeSave();
+                })
+                .setNeutralButton("Choose another", (d, w) -> {
+                    budgetPromptHandled = true;
+                    showBudgetPicker();
+                })
+                .setCancelable(false)
+                .show();
+    }
+
+    private Long pendingBudgetId = null;
+
+    private void showBudgetPicker() {
+        exec.diskIO().execute(() -> {
+            List<Budget> all = AppDatabase.get(EditReceiptActivity.this)
+                    .budgetDao().getAllActive();
+            runOnUiThread(() -> {
+                if (all == null || all.isEmpty()) {
+                    Toast.makeText(this, "No budgets available", Toast.LENGTH_SHORT).show();
+                    runSanityCheckBeforeSave();
+                    return;
+                }
+                String[] labels = new String[all.size()];
+                for (int i = 0; i < all.size(); i++) {
+                    Budget b = all.get(i);
+                    labels[i] = String.format(Locale.US, "%s — %s / %s",
+                            b.name, MoneyUtils.format(b.maxAmount), MoneyUtils.format(b.maxAmount));
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle("Choose budget")
+                        .setItems(labels, (d, w) -> {
+                            pendingBudgetId = all.get(w).id;
+                            runSanityCheckBeforeSave();
+                        })
+                        .setNegativeButton(android.R.string.cancel, (d2, w2) -> runSanityCheckBeforeSave())
+                        .show();
+            });
+        });
     }
 
     private void saveReceiptInternal() {
@@ -382,27 +468,40 @@ public class EditReceiptActivity extends AppCompatActivity {
         r.photoPath = photoPath;
         r.rawText = rawText;
         r.createdAt = System.currentTimeMillis();
+        // Link to the budget the user picked in the prompt. Only set on insert;
+        // updates preserve the existing budgetId.
+        final Long budgetIdToSet = pendingBudgetId;
         Logger.i("Edit", "saveReceiptInternal: id=" + r.id + " merchant='" + r.merchant
                 + "' amount=" + r.amount + " dateMillis=" + r.dateMillis
-                + " photoPath=" + (r.photoPath == null ? "null" : r.photoPath));
+                + " photoPath=" + (r.photoPath == null ? "null" : r.photoPath)
+                + " budgetId=" + budgetIdToSet);
 
         exec.diskIO().execute(() -> {
             AppDatabase db = AppDatabase.get(EditReceiptActivity.this);
             ReceiptDao dao = db.receiptDao();
+            long rowId;
             if (r.id > 0) {
                 Receipt existing = dao.getById(r.id);
                 if (existing != null) {
                     r.matchGroupId = existing.matchGroupId;
                     r.createdAt = existing.createdAt;
+                    if (budgetIdToSet != null) r.budgetId = budgetIdToSet;
+                    else r.budgetId = existing.budgetId;
                 }
                 dao.update(r);
+                rowId = r.id;
                 Logger.i("Edit", "Updated receipt id=" + r.id);
             } else {
-                long newId = dao.insert(r);
-                Logger.i("Edit", "Inserted receipt id=" + newId);
+                if (budgetIdToSet != null) r.budgetId = budgetIdToSet;
+                rowId = dao.insert(r);
+                Logger.i("Edit", "Inserted receipt id=" + rowId + " budgetId=" + budgetIdToSet);
             }
             exec.mainThread().execute(() -> {
-                Toast.makeText(EditReceiptActivity.this, R.string.saved, Toast.LENGTH_SHORT).show();
+                String saved = getString(R.string.saved);
+                String msg = budgetIdToSet != null
+                        ? saved + " · added to budget"
+                        : saved;
+                Toast.makeText(EditReceiptActivity.this, msg, Toast.LENGTH_SHORT).show();
                 finish();
             });
         });

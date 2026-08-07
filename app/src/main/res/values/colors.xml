@@ -39,6 +39,9 @@
     <color name="match_container">#FFCCFBF1</color>
     <color name="export_color">#FFEC4899</color>   <!-- pink: export -->
     <color name="export_container">#FFFCE7F3</color>
+    <color name="budget">#FF6366F1</color>         <!-- indigo: budgets -->
+    <color name="budget_container">#FFE0E7FF</color>
+    <color name="budget_dark">#FF4338CA</color>
 
     <!-- ============ Status ============ -->
     <color name="success">#FF10B981</color>

@@ -2,13 +2,20 @@ package com.example.receipttracker.ui;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.view.View;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.example.receipttracker.R;
 import com.example.receipttracker.data.AppDatabase;
+import com.example.receipttracker.data.Budget;
+import com.example.receipttracker.data.BudgetDao;
+import com.example.receipttracker.data.ReceiptDao;
 import com.example.receipttracker.log.Logger;
+import com.example.receipttracker.ui.budget.BudgetDetailActivity;
+import com.example.receipttracker.ui.budget.BudgetListActivity;
 import com.example.receipttracker.ui.debug.LogsActivity;
 import com.example.receipttracker.ui.export.ExportActivity;
 import com.example.receipttracker.ui.match.MatchActivity;
@@ -16,12 +23,19 @@ import com.example.receipttracker.ui.receipts.ReceiptListActivity;
 import com.example.receipttracker.ui.scan.ScanReceiptActivity;
 import com.example.receipttracker.ui.transactions.AddTransactionActivity;
 import com.example.receipttracker.ui.transactions.TransactionListActivity;
+import com.example.receipttracker.util.AppExecutors;
+import com.example.receipttracker.util.MoneyUtils;
 
 public class MainActivity extends AppCompatActivity {
 
-    private TextView tvReceiptCount;
-    private TextView tvTxCount;
+    private TextView tvReceiptCount, tvTxCount;
+    private TextView tvActiveBudgetName, tvActiveBudgetAmount;
+    private ProgressBar pbActiveBudget;
+    private View cardActiveBudget;
     private AppDatabase db;
+    private BudgetDao budgetDao;
+    private ReceiptDao receiptDao;
+    private final AppExecutors exec = AppExecutors.get();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -30,10 +44,15 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         db = AppDatabase.get(this);
+        budgetDao = db.budgetDao();
+        receiptDao = db.receiptDao();
 
-        // Live count TextViews inside the status pills.
         tvReceiptCount = findViewById(R.id.tv_receipt_count);
         tvTxCount = findViewById(R.id.tv_tx_count);
+        tvActiveBudgetName = findViewById(R.id.tv_active_budget_name);
+        tvActiveBudgetAmount = findViewById(R.id.tv_active_budget_amount);
+        pbActiveBudget = findViewById(R.id.pb_active_budget);
+        cardActiveBudget = findViewById(R.id.card_active_budget);
 
         // Primary action: scan a receipt.
         findViewById(R.id.btn_scan).setOnClickListener(v -> {
@@ -51,7 +70,7 @@ public class MainActivity extends AppCompatActivity {
             startActivity(new Intent(this, TransactionListActivity.class));
         });
 
-        // Secondary action cards: browse receipts / log a new bank charge.
+        // Secondary action cards: browse receipts / log a new bank charge / open budgets.
         findViewById(R.id.btn_view_receipts).setOnClickListener(v -> {
             Logger.i("Main", "btn_view_receipts clicked");
             startActivity(new Intent(this, ReceiptListActivity.class));
@@ -59,6 +78,27 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.btn_add_tx).setOnClickListener(v -> {
             Logger.i("Main", "btn_add_tx clicked");
             startActivity(new Intent(this, AddTransactionActivity.class));
+        });
+        findViewById(R.id.btn_budgets).setOnClickListener(v -> {
+            Logger.i("Main", "btn_budgets clicked");
+            startActivity(new Intent(this, BudgetListActivity.class));
+        });
+
+        // Active budget card: tap to open detail. The "getActive" DB call
+        // is synchronous, so we hop to diskIO first.
+        cardActiveBudget.setOnClickListener(v -> {
+            exec.diskIO().execute(() -> {
+                Budget active = budgetDao.getActive();
+                runOnUiThread(() -> {
+                    if (active == null) {
+                        startActivity(new Intent(this, BudgetListActivity.class));
+                    } else {
+                        Intent i = new Intent(this, BudgetDetailActivity.class);
+                        i.putExtra(BudgetDetailActivity.EXTRA_BUDGET_ID, active.id);
+                        startActivity(i);
+                    }
+                });
+            });
         });
 
         // Tertiary: match + export.
@@ -77,16 +117,41 @@ public class MainActivity extends AppCompatActivity {
             startActivity(new Intent(this, LogsActivity.class));
         });
 
-        // LiveData: the counts re-render automatically on every DB change.
-        db.receiptDao().getAllLive().observe(this, list -> {
-            int n = list == null ? 0 : list.size();
-            Logger.d("Main", "receipts LiveData -> " + n);
-            tvReceiptCount.setText(Integer.toString(n));
+        // LiveData wiring.
+        receiptDao.countActiveLive().observe(this, n -> {
+            int count = n == null ? 0 : n;
+            Logger.d("Main", "receipts countActiveLive -> " + count);
+            tvReceiptCount.setText(Integer.toString(count));
         });
         db.bankTransactionDao().countLive().observe(this, count -> {
             int n = count == null ? 0 : count;
-            Logger.d("Main", "transactions LiveData -> " + n);
+            Logger.d("Main", "transactions countLive -> " + n);
             tvTxCount.setText(Integer.toString(n));
+        });
+
+        // Active budget: observe the active row AND its spent amount.
+        budgetDao.getActiveLive().observe(this, this::renderActiveBudget);
+        // sumSpentLive is parameterized, so we observe it in a separate observe call
+        // when the active budget is non-null. We do that inside renderActiveBudget.
+    }
+
+    private void renderActiveBudget(Budget active) {
+        if (active == null) {
+            tvActiveBudgetName.setText("No budget set up");
+            tvActiveBudgetAmount.setText("$0 / $0");
+            pbActiveBudget.setProgress(0);
+            return;
+        }
+        tvActiveBudgetName.setText(active.name);
+        // Live observed query for the spent amount.
+        budgetDao.sumSpentLive(active.id).observe(this, spent -> {
+            double s = spent == null ? 0 : spent;
+            tvActiveBudgetAmount.setText(String.format("%s / %s",
+                    MoneyUtils.format(s), MoneyUtils.format(active.maxAmount)));
+            int pct = active.maxAmount > 0
+                    ? (int) Math.min(100, Math.round(s * 100.0 / active.maxAmount))
+                    : 0;
+            pbActiveBudget.setProgress(pct);
         });
     }
 }

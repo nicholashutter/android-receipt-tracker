@@ -188,6 +188,109 @@ The original "guess the total" logic was a single hand-tuned linear scoring func
 
 The two stages each train in <100ms on a desktop and run in well under a millisecond per inference, so the whole pipeline is fast enough to run on every save in the background.
 
+## Budgets and soft-delete
+
+Both features are baked into the Room schema and surfaced in the main
+screen + a new pair of activities.
+
+### Data model additions (v1 → v2 migration)
+
+```sql
+CREATE TABLE budgets (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT,                 -- display name, e.g. "Groceries August"
+  maxAmount   REAL NOT NULL,        -- the cap
+  createdAt   INTEGER NOT NULL,
+  isActive    INTEGER NOT NULL,     -- exactly one row has isActive=1
+  isDeleted   INTEGER NOT NULL      -- soft-delete tombstone
+);
+CREATE INDEX index_budgets_isActive ON budgets (isActive);
+
+ALTER TABLE receipts ADD COLUMN budgetId INTEGER;  -- FK to budgets.id, nullable
+ALTER TABLE receipts ADD COLUMN deletedAt INTEGER; -- tombstone, NULL = active
+CREATE INDEX index_receipts_budgetId  ON receipts (budgetId);
+CREATE INDEX index_receipts_deletedAt ON receipts (deletedAt);
+```
+
+The migration is **purely additive** — new nullable columns and a new
+table. Every existing row gets `budgetId = NULL` and `deletedAt = NULL`,
+which means "not in any budget" and "not deleted", both correct defaults
+for pre-existing data. No data loss, no prompt to the user.
+
+`fallbackToDestructiveMigration()` is still wired in as a last-resort
+safety net for v3+ if a future migration isn't ready when the schema
+bumps.
+
+### Active-budget invariant
+
+"Exactly one budget is active" is enforced by the SQL, not by app code.
+`BudgetDao.setActive(id)` is:
+
+```sql
+UPDATE budgets SET isActive = (CASE WHEN id = :id THEN 1 ELSE 0 END)
+```
+
+A single statement atomically clears every other row's `isActive` and
+sets the chosen one. There's no window where two rows can be active or
+where no row is active (other than the legitimate "no budget yet"
+state, which is just "all rows have isActive=0").
+
+### Spent amount is computed, not stored
+
+`BudgetDetailActivity` shows `spent / cap` via a `LiveData<Double>`:
+
+```sql
+SELECT COALESCE(SUM(amount), 0)
+FROM receipts
+WHERE budgetId = :budgetId AND deletedAt IS NULL
+```
+
+It's recomputed on every relevant insert / update / soft-delete, so
+it never drifts out of sync with the underlying receipts. Same for the
+main screen's "active budget" card.
+
+### Soft-delete vs hard-delete
+
+Receipts use a tombstone column (`deletedAt: Long?`). Every normal DAO
+query (`getAllActiveLive`, `countActiveLive`, `sumSpentLive`,
+`getByBudgetLive`, the matcher, the exporter) filters
+`deletedAt IS NULL`. The only way to see deleted rows is the
+`getAllLive` query, which the `ReceiptListActivity` calls when the
+"Show deleted" menu toggle is on.
+
+A deleted receipt keeps its JPEG, its OCR text, and its `matchGroupId`,
+so flipping the toggle back off and on doesn't re-OCR anything, and
+restoring a row is just `UPDATE receipts SET deletedAt = NULL WHERE id = ?`
+— a no-op for everything that depends on it.
+
+`Budget` has its own `isDeleted` flag (separate from receipts'
+`deletedAt`) so the two can be soft-deleted independently.
+
+### Save flow: receipt + budget
+
+```text
+EditReceiptActivity.onSave
+  ├─ if lastVerifiedTotal != null && !budgetPromptHandled
+  │    └─ look up active budget (exec.diskIO)
+  │       └─ if present → showBudgetPrompt(active)
+  │            ├─ Add     → pendingBudgetId = active.id; fall through
+  │            ├─ Skip    → pendingBudgetId = null; fall through
+  │            └─ Choose  → showBudgetPicker(all)
+  ├─ runSanityCheckBeforeSave() (existing logic, unchanged)
+  └─ saveReceiptInternal(budgetId = pendingBudgetId ?? existing.budgetId)
+```
+
+The `budgetPromptHandled` flag prevents re-prompting if the sanity
+check re-renders the verdict and fires `runVerifier` again. Once the
+user has answered (or there is no active budget), the flag stays set
+for the lifetime of this save.
+
+If the user picks "Choose another", `showBudgetPicker` lists every
+active budget and stores the selection in `pendingBudgetId`. There's
+no "create new budget" shortcut from the picker — the user has to
+back out and visit the budgets list to add a fresh one. Intentional,
+keeps the picker dialog small.
+
 ## Logging
 
 `Logger` writes to:

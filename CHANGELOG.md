@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased] — 2026-08-07
 
 ### Added
+- **Budgets (running budget per category).** Users can create multiple named budgets
+  (e.g. "Groceries August", "Travel"), each with a max amount. Exactly one is
+  active at a time. The active budget shows up on the main screen as a
+  full-width card with a live progress bar (spent / cap). Long-press a budget
+  in the list to set it active, edit it, or soft-delete it. Soft-deleting a
+  budget clears its `isActive` and hides it from the list (the `Budget`
+  entity has its own `isDeleted` flag, separate from receipts).
+- **Auto-link verified receipts to the active budget.** When the user saves a
+  receipt from `EditReceiptActivity` and a total was just verified, a dialog
+  pops up: *"Add $47.83 to 'Groceries August' budget? (24% used, $200 cap)"*
+  with three buttons — **Add**, **Skip**, **Choose another**. "Add" stores
+  `receipt.budgetId`; "Skip" stores NULL; "Choose another" opens a
+  `BudgetPickerDialog` over the list of active budgets. Manual budget
+  selection is also possible via the receipt edit screen.
+- **Soft-delete receipts (non-destructive).** Every receipt now has a
+  `deletedAt` tombstone column. The `ReceiptListActivity` filters
+  `deletedAt IS NULL` by default, so deleted receipts disappear from every
+  normal view (main count, budget spent, match list, export). A new menu
+  item **"Show deleted"** toggles the filter and reveals them with a
+  faded style + a "DELETED" warning chip. Tapping a deleted item shows
+  **Restore** / **Delete forever** options. A **"Clear all"** menu item in
+  normal mode soft-deletes every receipt in one shot; **"Restore all"** in
+  show-deleted mode brings them back. There is no destructive batch delete
+  in the UI — recoverability is the whole point.
+- **Database migration 1 → 2.** Adds the `budgets` table plus two nullable
+  columns on `receipts` (`budgetId`, `deletedAt`) and three matching
+  indices. The migration is purely additive; existing data is preserved
+  with no prompts. `fallbackToDestructiveMigration()` is kept as a
+  last-resort safety net for any future v3+ migration that doesn't ship.
+- **New `Budget` entity & `BudgetDao`.** LiveData queries for
+  `getAllActiveLive`, `getActiveLive`, `sumSpentLive` power the main screen
+  and the detail screen. `setActive` is a single atomic SQL UPDATE that
+  flips `isActive = (id = :id) ? 1 : 0` on every row in one statement, so
+  the "exactly one active" invariant is enforced by the query, not by
+  app code racing the DB.
+- **New screens: `BudgetListActivity` (FAB "New budget" + long-press
+  menu) and `BudgetDetailActivity` (live spent/cap, progress bar, linked
+  receipts).** Both are registered in `AndroidManifest.xml`. Layouts,
+  icons (`ic_budget.xml`, `ic_add.xml`), and a `dialog_create_budget.xml`
+  with Name + Max + "Make this the active budget" checkbox round out the
+  set.
+- **Main screen refresh.** New "Budgets" secondary tile (indigo) and a
+  full-width "Active budget" card (with progress bar) replace the
+  old two-pill row. The receipts count and transactions count now use
+  `countActiveLive` / `countLive` respectively so soft-deleted rows
+  don't inflate the headline number.
+
+### Fixed
+- **Main-thread DB crash on the active-budget card.** `MainActivity` was
+  calling `budgetDao.getActive()` synchronously on the UI thread inside a
+  click listener. Moved to `exec.diskIO().execute(...)` with
+  `runOnUiThread` for the post-DB navigation. (The same pattern is used
+  throughout the new budget code.)
+
+## [0.2.0] — 2026-08-07
+
+### Added
 - **Two-stage price + total classifier.**
   - `LogisticRegression` utility class with online gradient descent (800 epochs, LR=0.5, L2=0.01) and stable sigmoid.
   - `PriceClassifier` — 10 features, binary "is this a price?" with a `hasNoiseKeyword` feature that captures auth codes, expiration dates, suggested tips, and version-number lines that the MONEY regex used to mistake for prices.

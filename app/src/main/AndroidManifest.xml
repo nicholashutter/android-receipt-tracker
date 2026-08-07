@@ -59,6 +59,14 @@
             android:exported="false" />
 
         <activity
+            android:name=".ui.budget.BudgetListActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ui.budget.BudgetDetailActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ui.debug.LogsActivity"
             android:exported="false" />
 

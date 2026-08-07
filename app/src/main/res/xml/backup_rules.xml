@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Don't back up the Room database or saved receipt photos; everything is
+         exportable through the in-app export flow and we don't want a stale
+         backup reappearing on a fresh install. -->
+    <exclude domain="database" path="receipt_tracker.db" />
+    <exclude domain="file" path="receipts/" />
+</full-backup-content>

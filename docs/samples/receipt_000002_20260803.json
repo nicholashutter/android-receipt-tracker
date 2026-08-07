@@ -1,0 +1,13 @@
+{
+  "id": 2,
+  "merchant": "HARDWARE STORE",
+  "amount": 47.83,
+  "amountFormatted": "$47.83",
+  "dateMillis": 1754182800000,
+  "date": "Aug 3, 2026",
+  "notes": null,
+  "matchGroupId": null,
+  "image": "receipt_000002_20260803.jpg",
+  "rawText": "HARDWARE STORE\n456 Industrial Way\n\n3LB ALL PURP JOINT COMPOUND   18.04\n6X1-5/8 PH NC 1 DRYWALL       9.57\n027A WON 4-3/4X9-1/4         11.99\n5.27 EA                       5.27\nSubtotal                     44.50\nSales Tax 7.5%                 3.33\n\nTOTAL                        $47.83\n\n08/03/2026  10:15 AM\nPAID\n",
+  "createdAt": 1754183100000
+}

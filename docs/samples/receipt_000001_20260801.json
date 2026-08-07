@@ -1,0 +1,13 @@
+{
+  "id": 1,
+  "merchant": "WHOLE FOODS MARKET",
+  "amount": 34.56,
+  "amountFormatted": "$34.56",
+  "dateMillis": 1754006400000,
+  "date": "Aug 1, 2026",
+  "notes": null,
+  "matchGroupId": "8f4e2a10-1b3c-4d4e-9f5a-7b6c8d9e0f1a",
+  "image": "receipt_000001_20260801.jpg",
+  "rawText": "WHOLE FOODS MARKET\n123 Main St\n(555) 123-4567\n\nOrganic Bananas      1.99\nAlmond Milk 32oz     2.99\nSourdough Bread      4.50\nAvocados (3)         4.99\nFree-range Chicken  11.99\nHeirloom Tomatoes    8.10\n\nSubtotal            32.45\nSales Tax 6.5%       2.11\n\nTOTAL              $34.56\n\n08/01/2026  12:34 PM\nPAID — VISA **** 1234\nThank you!\n",
+  "createdAt": 1754006800000
+}

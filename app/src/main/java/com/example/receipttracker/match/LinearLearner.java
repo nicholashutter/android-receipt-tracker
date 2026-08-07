@@ -1,0 +1,178 @@
+package com.example.receipttracker.match;
+
+import androidx.annotation.NonNull;
+
+import com.example.receipttracker.log.Logger;
+import com.example.receipttracker.ocr.DetectedNumber;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * Stage 2 of the two-stage receipt-classifier: given a number that's
+ * already known to be a price (see {@link PriceClassifier}), what's the
+ * probability it's the receipt's total?
+ *
+ * <p>Implemented as a small logistic-regression classifier trained on
+ * synthetic receipts. Feature vector:</p>
+ * <ul>
+ *   <li>{@code hasTotalKeyword}     – 1 if the line has "total / amount / due / balance"</li>
+ *   <li>{@code hasComponentKeyword} – 1 if the line has "subtotal / tax / tip"</li>
+ *   <li>{@code isLargest}           – 1 if the value is the largest in the receipt</li>
+ *   <li>{@code lineInBottomHalf}    – 1 if the value's line is in the bottom half of the OCR text</li>
+ *   <li>{@code hasDecimal}          – 1 if the value has a decimal point (e.g. 5.99 not 6)</li>
+ *   <li>{@code belowSubtotal}       – 1 if the value is smaller than a detected subtotal</li>
+ *   <li>{@code closeToSubPlusTax}   – 1 if within $1 of subtotal+tax+tip</li>
+ *   <li>{@code looksLikeDate}       – 1 if the line has a "n/n" pattern (date fragment)</li>
+ *   <li>{@code looksLikeCode}       – 1 if integer and >= 100 (auth code, txn id)</li>
+ * </ul>
+ *
+ * <p>Output: sigmoid(weights · features + bias) ∈ [0, 1] — interpretable
+ * as P(this price is the real total).</p>
+ */
+public final class LinearLearner {
+
+    private LinearLearner() {}
+
+    public static final String[] FEATURE_NAMES = {
+            "hasTotalKeyword",
+            "hasComponentKeyword",
+            "isLargest",
+            "lineInBottomHalf",
+            "hasDecimal",
+            "belowSubtotal",
+            "closeToSubPlusTax",
+            "looksLikeDate",
+            "looksLikeCode"
+    };
+
+    public static final int FEATURE_COUNT = FEATURE_NAMES.length;
+
+    public static int featureCount() { return FEATURE_COUNT; }
+
+    // ---------- feature extraction ----------
+
+    public static double[] extractFeatures(@NonNull DetectedNumber n,
+                                           @NonNull List<DetectedNumber> all,
+                                           Double subtotal,
+                                           Double tax,
+                                           Double tip,
+                                           int totalLines) {
+        double[] f = new double[FEATURE_COUNT];
+        String kw = n.keyword == null ? "" : n.keyword.toLowerCase();
+        boolean hasTotal = kw.equals("total") || kw.equals("amount")
+                || kw.equals("balance") || kw.equals("due");
+        boolean hasComponent = kw.equals("subtotal") || kw.equals("tax") || kw.equals("tip");
+        f[0] = hasTotal ? 1.0 : 0.0;
+        f[1] = hasComponent ? 1.0 : 0.0;
+
+        double maxOther = 0;
+        for (DetectedNumber m : all) {
+            if (m == n) continue;
+            if (Math.abs(m.value - n.value) < 0.005) continue;
+            if (m.value > maxOther) maxOther = m.value;
+        }
+        f[2] = (maxOther <= 0 || n.value >= maxOther) ? 1.0 : 0.0;
+        f[3] = (totalLines > 0 && n.lineIndex >= (totalLines / 2.0)) ? 1.0 : 0.0;
+        f[4] = (n.value != Math.floor(n.value)) ? 1.0 : 0.0;
+        f[5] = (subtotal != null && n.value < subtotal - 0.01) ? 1.0 : 0.0;
+
+        if (subtotal != null) {
+            double predicted = subtotal + (tax == null ? 0.0 : tax) + (tip == null ? 0.0 : tip);
+            f[6] = (predicted > 0 && Math.abs(n.value - predicted) <= 1.00) ? 1.0 : 0.0;
+        } else {
+            f[6] = 0.0;
+        }
+
+        String line = n.line == null ? "" : n.line;
+        f[7] = line.matches(".*\\d+[/\\-]\\d+.*") ? 1.0 : 0.0;
+        boolean integer = (n.value == Math.floor(n.value));
+        f[8] = (integer && n.value >= 100 && n.value < 1_000_000) ? 1.0 : 0.0;
+
+        return f;
+    }
+
+    // ---------- trained model ----------
+
+    private static final String LOG_TAG = "TotalLearner";
+
+    private static volatile LogisticRegression.Trained model;
+    private static volatile boolean trained = false;
+
+    private static synchronized void trainIfNeeded() {
+        if (trained) return;
+        Logger.i(LOG_TAG, "Training on " + TRAINING_DATA.size() + " examples, "
+                + FEATURE_COUNT + " features, "
+                + HyperParamsLog(HyperParamsForTraining));
+        model = LogisticRegression.train(LOG_TAG, FEATURE_COUNT, TRAINING_DATA, HyperParamsForTraining);
+        trained = true;
+        Logger.i(LOG_TAG, "Training complete");
+        StringBuilder wlog = new StringBuilder("Learned weights:\n");
+        for (int i = 0; i < FEATURE_COUNT; i++) {
+            wlog.append(String.format(Locale.US, "  %-22s = %+.3f%n", FEATURE_NAMES[i], model.weights[i]));
+        }
+        wlog.append(String.format(Locale.US, "  %-22s = %+.3f", "bias", model.bias));
+        Logger.i(LOG_TAG, wlog.toString());
+    }
+
+    private static final LogisticRegression.HyperParams HyperParamsForTraining =
+            new LogisticRegression.HyperParams(800, 0.5, 0.01);
+
+    private static String HyperParamsLog(LogisticRegression.HyperParams hp) {
+        return String.format(Locale.US, "epochs=%d lr=%.2f l2=%.3f", hp.epochs, hp.learningRate, hp.l2Lambda);
+    }
+
+    public static double predictProbability(double[] features) {
+        trainIfNeeded();
+        return LogisticRegression.predictProbability(model, features);
+    }
+
+    public static double predictLogit(double[] features) {
+        trainIfNeeded();
+        return LogisticRegression.predictLogit(model, features);
+    }
+
+    public static double[] getWeights() {
+        trainIfNeeded();
+        return model.weights.clone();
+    }
+
+    public static double getBias() {
+        trainIfNeeded();
+        return model.bias;
+    }
+
+    public static String explain(double[] features) {
+        trainIfNeeded();
+        return LogisticRegression.explain(FEATURE_NAMES, model, features);
+    }
+
+    // ---------- training data ----------
+
+    private static final List<LogisticRegression.Example> TRAINING_DATA = buildTrainingData();
+
+    private static List<LogisticRegression.Example> buildTrainingData() {
+        List<LogisticRegression.Example> ex = new ArrayList<>();
+        // === POSITIVE (label=1): looks like a real total ===
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 1,1, 1, 0, 1, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0}, 1.0));
+
+        // === NEGATIVE (label=0): NOT a total ===
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 1, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 1, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 1}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 0}, 0.0));
+        return ex;
+    }
+}

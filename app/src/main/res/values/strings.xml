@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Receipt Tracker</string>
+
+    <!-- Main screen -->
+    <string name="main_title">Receipt Tracker</string>
+    <string name="main_subtitle">Scan receipts, log bank charges, see what matches.</string>
+    <string name="action_scan_receipt">Scan a receipt</string>
+    <string name="action_view_receipts">My receipts (%1$d)</string>
+    <string name="action_add_transaction">Add bank transaction</string>
+    <string name="action_view_transactions">My transactions (%1$d)</string>
+    <string name="action_match">Match receipts &lt;-&gt; bank</string>
+    <string name="action_export">Export scans to a folder</string>
+    <string name="action_pick_total">Pick a number to use as the total</string>
+    <string name="action_view_logs">View debug log</string>
+    <string name="logs_title">Debug log</string>
+
+    <!-- Scan screen -->
+    <string name="scan_title">Scan receipt</string>
+    <string name="scan_hint">Point the camera at the receipt. Try to capture the full receipt including the total.</string>
+    <string name="scan_capture">Capture</string>
+    <string name="scan_pick_from_gallery">Pick from gallery</string>
+    <string name="scan_processing">Reading receipt&#8230;</string>
+    <string name="scan_permission_denied">Camera permission denied. You can still pick from the gallery.</string>
+    <string name="scan_no_text">Couldn\'t read any text from that image. Try again with better lighting.</string>
+
+    <!-- Editable fields on a parsed receipt -->
+    <string name="field_merchant">Merchant</string>
+    <string name="field_date">Date</string>
+    <string name="field_amount">Amount</string>
+    <string name="field_notes">Notes (optional)</string>
+    <string name="action_save">Save</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_cancel">Cancel</string>
+
+    <!-- Receipt list -->
+    <string name="receipts_title">Receipts</string>
+    <string name="receipts_empty">No receipts yet. Tap \"Scan a receipt\" to add one.</string>
+    <string name="receipt_match_status_matched">Matched</string>
+    <string name="receipt_match_status_unmatched">Unmatched</string>
+
+    <!-- Transaction list / add -->
+    <string name="transactions_title">Bank transactions</string>
+    <string name="transactions_empty">No transactions yet. Add the charges from your bank statement.</string>
+    <string name="add_transaction_title">Add bank transaction</string>
+    <string name="field_description">Description</string>
+    <string name="field_account">Account (optional)</string>
+    <string name="hint_amount_positive">12.34</string>
+
+    <!-- Match screen -->
+    <string name="match_title">Match receipts to bank</string>
+    <string name="match_explainer">Receipts and transactions within $1 and 3 days are auto-suggested. Tap a suggestion to confirm.</string>
+    <string name="match_section_unmatched_receipts">Unmatched receipts (%1$d)</string>
+    <string name="match_section_unmatched_tx">Unmatched bank transactions (%1$d)</string>
+    <string name="match_section_matched">Matched (%1$d)</string>
+    <string name="match_suggestion_for">Suggesting for %1$s &#183; %2$s</string>
+    <string name="match_no_suggestion">No close bank transaction found</string>
+    <string name="match_action_unlink">Unmatch</string>
+
+    <!-- General -->
+    <string name="error_required">Required</string>
+    <string name="error_invalid_amount">Enter a valid positive number</string>
+    <string name="saved">Saved</string>
+    <string name="deleted">Deleted</string>
+</resources>

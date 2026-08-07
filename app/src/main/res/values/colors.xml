@@ -1,13 +1,91 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="background">#FFFFFFFF</color>
-    <color name="on_surface">#FF111111</color>
-    <color name="muted">#FF666666</color>
-    <color name="divider">#FFEEEEEE</color>
-    <color name="ok">#FF1B873F</color>
-    <color name="warn">#FFB25E00</color>
-    <color name="primary">#FF1B5E20</color>
-    <color name="primary_variant">#FF003D00</color>
+    <!--
+      Receipt Tracker palette — vibrant Material 3 tonal system.
+      Primary is sky-cyan (clean, modern, evokes a clean receipt printer).
+      Action categories each get a distinct hue so the main screen has obvious
+      visual hierarchy and the user can find their way around by color.
+    -->
+
+    <!-- ============ Brand: sky (primary) ============ -->
+    <color name="primary">#FF0EA5E9</color>
+    <color name="primary_dark">#FF0284C7</color>
+    <color name="primary_container">#FFE0F2FE</color>
     <color name="on_primary">#FFFFFFFF</color>
-    <color name="surface">#FFFAFAFA</color>
+    <color name="on_primary_container">#FF0C4A6E</color>
+
+    <!-- ============ Secondary: violet ============ -->
+    <color name="secondary">#FF8B5CF6</color>
+    <color name="secondary_dark">#FF7C3AED</color>
+    <color name="secondary_container">#FFEDE9FE</color>
+    <color name="on_secondary">#FFFFFFFF</color>
+    <color name="on_secondary_container">#FF3B0764</color>
+
+    <!-- ============ Tertiary: hot pink (accent) ============ -->
+    <color name="tertiary">#FFEC4899</color>
+    <color name="tertiary_dark">#FFDB2777</color>
+    <color name="tertiary_container">#FFFCE7F3</color>
+    <color name="on_tertiary">#FFFFFFFF</color>
+    <color name="on_tertiary_container">#FF831843</color>
+
+    <!-- ============ Action categories (for the main screen tiles) ============ -->
+    <color name="scan">#FFF97316</color>          <!-- orange: SCAN — bright, action-y -->
+    <color name="scan_container">#FFFFEDD5</color>
+    <color name="receipts">#FF0EA5E9</color>       <!-- sky: receipts -->
+    <color name="receipts_container">#FFE0F2FE</color>
+    <color name="transactions">#FF8B5CF6</color>   <!-- violet: transactions -->
+    <color name="transactions_container">#FFEDE9FE</color>
+    <color name="match_color">#FF14B8A6</color>     <!-- teal: match (renamed because "match" is a SQL keyword) -->
+    <color name="match_container">#FFCCFBF1</color>
+    <color name="export_color">#FFEC4899</color>   <!-- pink: export -->
+    <color name="export_container">#FFFCE7F3</color>
+
+    <!-- ============ Status ============ -->
+    <color name="success">#FF10B981</color>
+    <color name="success_container">#FFD1FAE5</color>
+    <color name="on_success_container">#FF064E3B</color>
+    <color name="warning">#FFF59E0B</color>
+    <color name="warning_container">#FFFEF3C7</color>
+    <color name="on_warning_container">#FF78350F</color>
+    <color name="error">#FFEF4444</color>
+    <color name="error_container">#FFFEE2E2</color>
+    <color name="on_error_container">#FF7F1D1D</color>
+
+    <!-- ============ Money: emerald (slightly darker for emphasis) ============ -->
+    <color name="money">#FF059669</color>
+    <color name="money_container">#FFD1FAE5</color>
+
+    <!-- ============ Neutrals / surfaces ============ -->
+    <color name="background">#FFF8FAFC</color>          <!-- slate-50 -->
+    <color name="surface">#FFFFFFFF</color>
+    <color name="surface_variant">#FFF1F5F9</color>     <!-- slate-100 -->
+    <color name="surface_dim">#FFE2E8F0</color>        <!-- slate-200 -->
+    <color name="on_surface">#FF0F172A</color>         <!-- slate-900 -->
+    <color name="on_surface_variant">#FF475569</color> <!-- slate-600 -->
+    <color name="on_surface_muted">#FF94A3B8</color>   <!-- slate-400 -->
+    <color name="outline">#FFCBD5E1</color>            <!-- slate-300 -->
+    <color name="outline_variant">#FFE2E8F0</color>    <!-- slate-200 -->
+
+    <!-- ============ Verdict panel (the cross-check card) ============ -->
+    <color name="verdict_ok_bg">#FFECFDF5</color>      <!-- emerald-50 -->
+    <color name="verdict_ok_border">#FFA7F3D0</color> <!-- emerald-200 -->
+    <color name="verdict_warn_bg">#FFFFFBEB</color>    <!-- amber-50 -->
+    <color name="verdict_warn_border">#FFFDE68A</color> <!-- amber-200 -->
+    <color name="verdict_err_bg">#FFFEF2F2</color>     <!-- red-50 -->
+    <color name="verdict_err_border">#FFFECACA</color>  <!-- red-200 -->
+
+    <!-- ============ Gradient stops (the hero header) ============ -->
+    <color name="hero_start">#FF0EA5E9</color>         <!-- sky-500 -->
+    <color name="hero_mid">#FF8B5CF6</color>           <!-- violet-500 -->
+    <color name="hero_end">#FFEC4899</color>           <!-- pink-500 -->
+
+    <!-- ============ Convenience / aliases ============ -->
+    <color name="white">#FFFFFFFF</color>
+    <color name="black">#FF000000</color>
+    <!-- Old color names preserved as aliases for layouts that haven't been migrated yet. -->
+    <color name="muted">@color/on_surface_variant</color>
+    <color name="divider">@color/outline_variant</color>
+    <color name="ok">@color/success</color>
+    <color name="warn">@color/warning</color>
+    <color name="primary_variant">@color/primary_dark</color>
 </resources>

@@ -1,6 +1,7 @@
 package com.example.receipttracker.ui.debug;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Bundle;
@@ -9,6 +10,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.example.receipttracker.R;
+import com.example.receipttracker.data.AppDatabase;
+import com.example.receipttracker.data.Receipt;
 import com.example.receipttracker.log.Logger;
 import com.example.receipttracker.match.LinearLearner;
 import com.example.receipttracker.match.PriceClassifier;
@@ -18,6 +21,7 @@ import com.example.receipttracker.ocr.ParsedReceipt;
 import com.example.receipttracker.ocr.ReceiptImageStore;
 import com.example.receipttracker.ocr.ReceiptOcr;
 import com.example.receipttracker.ocr.ReceiptParser;
+import com.example.receipttracker.ui.receipts.EditReceiptActivity;
 import com.example.receipttracker.util.AppExecutors;
 import com.google.android.material.button.MaterialButton;
 
@@ -41,6 +45,14 @@ import java.io.File;
  */
 public class TestPipelineActivity extends Activity {
 
+    // Cached so the "Open in editor" button can re-use the last successful run.
+    private String lastSavedPath;
+    private String lastRawText;
+    private String lastMerchant;
+    private long lastDateMillis;
+    private double lastAmount;
+    private MaterialButton btnOpenEditor;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -50,13 +62,39 @@ public class TestPipelineActivity extends Activity {
 
         TextView tvResult = findViewById(R.id.tv_result);
         MaterialButton btnRun = findViewById(R.id.btn_run);
+        btnOpenEditor = findViewById(R.id.btn_open_editor);
 
         String pathExtra = getIntent().getStringExtra("extra_image_path");
         Uri uriExtra = getIntent().getParcelableExtra("extra_image_uri");
         Logger.i("TestPipe", "path extra: " + pathExtra + ", uri extra: " + uriExtra);
 
         btnRun.setOnClickListener(v -> runPipeline(pathExtra, uriExtra, tvResult));
+        btnOpenEditor.setOnClickListener(v -> openInEditor());
         runPipeline(pathExtra, uriExtra, tvResult);
+    }
+
+    private void openInEditor() {
+        if (lastSavedPath == null) {
+            Toast.makeText(this, "Run the pipeline first", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        // Persist as a receipt row, then launch the editor with the new id.
+        final Receipt r = new Receipt();
+        r.merchant = lastMerchant;
+        r.amount = lastAmount;
+        r.dateMillis = lastDateMillis;
+        r.photoPath = lastSavedPath;
+        r.rawText = lastRawText;
+        r.createdAt = System.currentTimeMillis();
+        AppExecutors.get().diskIO().execute(() -> {
+            long id = AppDatabase.get(this).receiptDao().insert(r);
+            Logger.i("TestPipe", "Inserted receipt id=" + id + " for editor");
+            runOnUiThread(() -> {
+                Intent i = new Intent(this, EditReceiptActivity.class);
+                i.putExtra(EditReceiptActivity.EXTRA_RECEIPT_ID, id);
+                startActivity(i);
+            });
+        });
     }
 
     private void runPipeline(String pathExtra, Uri uriExtra, TextView tvResult) {
@@ -108,6 +146,13 @@ public class TestPipelineActivity extends Activity {
                 sb.append("merchant: ").append(parsed.merchant).append("\n");
                 sb.append("dateMillis: ").append(parsed.dateMillis).append("\n");
                 sb.append("amount: ").append(parsed.amount).append("\n\n");
+
+                // Cache for the "Open in editor" button.
+                lastSavedPath = saved.getAbsolutePath();
+                lastRawText = rawText;
+                lastMerchant = parsed.merchant;
+                lastDateMillis = parsed.dateMillis;
+                lastAmount = parsed.amount;
 
                 // === Now exercise the TotalVerifier against every detected number ===
                 Logger.i("TestPipe", "Running TotalVerifier for each detected number");
@@ -168,6 +213,9 @@ public class TestPipelineActivity extends Activity {
             runOnUiThread(() -> {
                 tvResult.setText(result);
                 tvResult.setVisibility(View.VISIBLE);
+                if (lastSavedPath != null && btnOpenEditor != null) {
+                    btnOpenEditor.setEnabled(true);
+                }
                 Toast.makeText(this, "Done — see logs", Toast.LENGTH_SHORT).show();
             });
         });

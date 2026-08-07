@@ -22,12 +22,28 @@
         android:textColor="@color/muted"
         android:textSize="12sp" />
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btn_run"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginBottom="12dp"
-        android:text="Re-run pipeline" />
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_run"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Re-run pipeline" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_open_editor"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:enabled="false"
+            android:text="Open in editor" />
+    </LinearLayout>
 
     <ScrollView
         android:layout_width="match_parent"

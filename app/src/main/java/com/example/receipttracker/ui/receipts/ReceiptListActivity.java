@@ -27,7 +27,7 @@ import java.util.List;
 public class ReceiptListActivity extends AppCompatActivity {
 
     private RecyclerView rv;
-    private TextView tvEmpty;
+    private View tvEmpty;
     private ReceiptAdapter adapter;
 
     @Override

@@ -22,7 +22,7 @@ import java.util.List;
 public class TransactionListActivity extends AppCompatActivity {
 
     private RecyclerView rv;
-    private TextView tvEmpty;
+    private View tvEmpty;
     private TxAdapter adapter;
 
     @Override

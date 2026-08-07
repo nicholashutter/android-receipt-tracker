@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background"
@@ -9,20 +10,44 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:paddingHorizontal="16dp"
+        android:paddingTop="20dp"
+        android:paddingBottom="32dp">
 
-        <ImageView
-            android:id="@+id/iv_thumb"
+        <!-- ============ HERO: receipt image ============ -->
+        <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="240dp"
+            android:background="@drawable/bg_action_card"
+            android:padding="4dp">
+
+            <ImageView
+                android:id="@+id/iv_thumb"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@color/surface_variant"
+                android:contentDescription="@string/receipts_title"
+                android:scaleType="centerInside" />
+        </FrameLayout>
+
+        <!-- ============ SECTION: Receipt details ============ -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
             android:layout_marginBottom="12dp"
-            android:background="@color/divider"
-            android:scaleType="centerInside" />
+            android:text="Receipt details"
+            android:textColor="@color/on_surface"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.08" />
 
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="@string/field_merchant">
+            android:hint="@string/field_merchant"
+            app:boxBackgroundMode="outline"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/et_merchant"
@@ -34,8 +59,10 @@
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/field_date">
+            android:layout_marginTop="10dp"
+            android:hint="@string/field_date"
+            app:boxBackgroundMode="outline"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/et_date"
@@ -48,8 +75,11 @@
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/field_amount">
+            android:layout_marginTop="10dp"
+            android:hint="@string/field_amount"
+            app:boxBackgroundMode="outline"
+            app:startIconDrawable="@drawable/ic_money"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/et_amount"
@@ -61,8 +91,10 @@
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/field_notes">
+            android:layout_marginTop="10dp"
+            android:hint="@string/field_notes"
+            app:boxBackgroundMode="outline"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/et_notes"
@@ -72,51 +104,78 @@
                 android:minLines="2" />
         </com.google.android.material.textfield.TextInputLayout>
 
+        <!-- OCR raw text (collapsible debug) -->
         <TextView
             android:id="@+id/tv_raw_text"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:background="@color/divider"
+            android:background="@drawable/bg_chip_money"
             android:fontFamily="monospace"
-            android:padding="8dp"
-            android:textColor="@color/muted"
+            android:padding="12dp"
+            android:textColor="@color/on_surface_variant"
             android:textSize="11sp"
             android:visibility="gone" />
 
-        <!-- "Mark as total" verifier section -->
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_mark_total"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+        <!-- ============ SECTION: Total verification ============ -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:layout_marginBottom="4dp"
+            android:text="Total verification"
+            android:textColor="@color/on_surface"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.08" />
+
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:padding="10dp"
-            android:text="Pick &amp; verify the total (circle a number)" />
+            android:layout_marginBottom="12dp"
+            android:text="Tap to circle a number on the receipt — we'll cross-check it against the entered amount and the line items."
+            android:textColor="@color/on_surface_variant"
+            android:textSize="12sp" />
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_mark_total"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="14dp"
+            android:text="Pick &amp; verify the total"
+            android:textSize="15sp"
+            app:icon="@drawable/ic_verified"
+            app:iconGravity="textStart"
+            app:backgroundTint="@color/secondary"
+            app:cornerRadius="16dp" />
+
+        <!-- Verdict panel: bg toggled in code between ok/warn/err drawables. -->
         <TextView
             android:id="@+id/tv_verifier"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:background="@color/divider"
-            android:padding="10dp"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_verdict_ok"
+            android:fontFamily="monospace"
+            android:padding="14dp"
             android:textColor="@color/on_surface"
             android:textSize="12sp"
             android:visibility="gone" />
 
+        <!-- ============ ACTIONS ============ -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="28dp"
             android:orientation="horizontal">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_delete"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
+                style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/action_delete" />
+                android:text="@string/action_delete"
+                android:textColor="@color/error" />
 
             <View
                 android:layout_width="0dp"
@@ -125,10 +184,12 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_save"
-                style="@style/Widget.MaterialComponents.Button"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/action_save" />
+                android:paddingHorizontal="32dp"
+                android:text="@string/action_save"
+                app:backgroundTint="@color/primary"
+                app:cornerRadius="16dp" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

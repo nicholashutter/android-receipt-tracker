@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background"
@@ -9,69 +10,114 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:paddingHorizontal="20dp"
+        android:paddingTop="20dp"
+        android:paddingBottom="32dp">
 
-        <TextView
-            android:layout_width="wrap_content"
+        <!-- Title row with pink export icon -->
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Export"
-            android:textColor="@color/on_surface"
-            android:textSize="24sp"
-            android:textStyle="bold" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <FrameLayout
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:background="@drawable/bg_icon_circle"
+                android:backgroundTint="@color/export_color">
+
+                <ImageView
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_export"
+                    android:importantForAccessibility="no" />
+            </FrameLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="16dp"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Export"
+                    android:textColor="@color/on_surface"
+                    android:textSize="26sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="-0.02" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="One JPG + one JSON per receipt"
+                    android:textColor="@color/on_surface_variant"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </LinearLayout>
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="16dp"
             android:layout_marginBottom="20dp"
             android:text="Pick a folder on your phone, SD card, or a cloud provider (Drive, Dropbox). The app will write one JPG and one JSON per receipt into that folder."
-            android:textColor="@color/muted"
-            android:textSize="14sp" />
+            android:textColor="@color/on_surface_variant"
+            android:textSize="14sp"
+            android:lineSpacingMultiplier="1.3" />
 
         <TextView
             android:id="@+id/tv_folder"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@color/divider"
-            android:padding="12dp"
+            android:background="@drawable/bg_action_card"
+            android:padding="14dp"
             android:text="No folder selected"
             android:textColor="@color/on_surface"
             android:textSize="14sp" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_pick"
-            style="@style/Widget.MaterialComponents.Button"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:padding="14dp"
-            android:text="Choose folder" />
+            android:text="Choose folder"
+            app:backgroundTint="@color/primary"
+            app:cornerRadius="16dp" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_export"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
             android:enabled="false"
             android:padding="14dp"
-            android:text="Export newest receipt here" />
+            android:text="Export newest receipt here"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            app:cornerRadius="16dp" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_export_all"
-            style="@style/Widget.MaterialComponents.Button"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:padding="14dp"
-            android:text="Export ALL receipts" />
+            android:text="Export ALL receipts"
+            app:backgroundTint="@color/export_color"
+            app:cornerRadius="16dp" />
 
         <TextView
             android:id="@+id/tv_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
-            android:textColor="@color/muted"
+            android:textColor="@color/on_surface_variant"
             android:textSize="13sp" />
     </LinearLayout>
 </ScrollView>

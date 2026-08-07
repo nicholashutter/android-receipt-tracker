@@ -2,17 +2,21 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="?android:attr/selectableItemBackground"
+    android:layout_marginBottom="10dp"
+    android:background="@drawable/bg_action_card"
     android:gravity="center_vertical"
     android:orientation="horizontal"
-    android:padding="10dp">
+    android:padding="14dp"
+    android:clickable="true"
+    android:focusable="true"
+    android:foreground="?android:attr/selectableItemBackground">
 
     <ImageView
         android:id="@+id/iv_thumb"
         android:layout_width="64dp"
         android:layout_height="64dp"
-        android:layout_marginEnd="12dp"
-        android:background="@color/divider"
+        android:layout_marginEnd="14dp"
+        android:background="@color/surface_variant"
         android:scaleType="centerCrop" />
 
     <LinearLayout
@@ -25,6 +29,8 @@
             android:id="@+id/tv_merchant"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
             android:textColor="@color/on_surface"
             android:textSize="16sp"
             android:textStyle="bold" />
@@ -33,21 +39,30 @@
             android:id="@+id/tv_date"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textColor="@color/muted"
-            android:textSize="13sp" />
+            android:layout_marginTop="2dp"
+            android:textColor="@color/on_surface_variant"
+            android:textSize="12sp" />
 
         <TextView
             android:id="@+id/tv_status"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:textSize="12sp" />
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_chip_primary"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="3dp"
+            android:textColor="@color/on_primary_container"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.04" />
     </LinearLayout>
 
     <TextView
         android:id="@+id/tv_amount"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:textColor="@color/on_surface"
-        android:textSize="16sp"
+        android:layout_marginStart="8dp"
+        android:textColor="@color/money"
+        android:textSize="18sp"
         android:textStyle="bold" />
 </LinearLayout>

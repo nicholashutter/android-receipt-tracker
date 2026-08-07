@@ -5,20 +5,49 @@
     android:background="@color/background"
     android:orientation="vertical">
 
-    <TextView
+    <!-- Hero explainer: small tinted bar so the user knows what the screen does. -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@color/divider"
-        android:padding="12dp"
-        android:text="@string/match_explainer"
-        android:textColor="@color/muted"
-        android:textSize="13sp" />
+        android:background="@drawable/bg_chip_money"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="16dp"
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginTop="16dp">
+
+        <FrameLayout
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="@drawable/bg_icon_circle"
+            android:backgroundTint="@color/match_container">
+
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_match"
+                android:importantForAccessibility="no" />
+        </FrameLayout>
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="12dp"
+            android:text="@string/match_explainer"
+            android:textColor="@color/on_success_container"
+            android:textSize="13sp"
+            android:lineSpacingMultiplier="1.2" />
+    </LinearLayout>
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rv"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:padding="8dp"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="32dp"
         android:clipToPadding="false" />
 </LinearLayout>

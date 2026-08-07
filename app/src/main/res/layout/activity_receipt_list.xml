@@ -8,17 +8,43 @@
         android:id="@+id/rv"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:padding="8dp"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="16dp"
+        android:paddingBottom="32dp"
         android:clipToPadding="false" />
 
-    <TextView
+    <LinearLayout
         android:id="@+id/tv_empty"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
         android:gravity="center"
-        android:padding="24dp"
-        android:text="@string/receipts_empty"
-        android:textColor="@color/muted"
-        android:textSize="16sp" />
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:visibility="visible">
+
+        <FrameLayout
+            android:layout_width="80dp"
+            android:layout_height="80dp"
+            android:background="@drawable/bg_icon_circle"
+            android:backgroundTint="@color/receipts_container">
+
+            <ImageView
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_receipts"
+                android:importantForAccessibility="no" />
+        </FrameLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:gravity="center"
+            android:text="@string/receipts_empty"
+            android:textColor="@color/on_surface_variant"
+            android:textSize="15sp"
+            android:lineSpacingMultiplier="1.3" />
+    </LinearLayout>
 </FrameLayout>

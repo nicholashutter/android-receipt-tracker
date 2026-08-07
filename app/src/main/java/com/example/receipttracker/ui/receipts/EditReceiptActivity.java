@@ -272,6 +272,7 @@ public class EditReceiptActivity extends AppCompatActivity {
     }
 
     private void renderVerifier(DetectedNumber picked, TotalVerifier.Result r, double entered) {
+        applyVerdictBackground(r);
         StringBuilder body = new StringBuilder();
         body.append(String.format(Locale.US,
                 "Marked:  $%.2f  (line %d: %s)%n", picked.value, picked.lineIndex, trim(picked.line, 50)));
@@ -411,5 +412,23 @@ public class EditReceiptActivity extends AppCompatActivity {
         if (s == null) return "";
         s = s.trim();
         return s.length() <= max ? s : s.substring(0, max - 1) + "…";
+    }
+
+    /**
+     * Switches the verdict panel's background to match how confident the
+     * verifier is. High confidence -> emerald (ok), mid -> amber (warn),
+     * low or adjusted -> red (err). The colors come from the bg_verdict_*
+     * drawables so they stay in sync with colors.xml.
+     */
+    private void applyVerdictBackground(TotalVerifier.Result r) {
+        int drawable;
+        if (r.confidence >= 0.7) {
+            drawable = R.drawable.bg_verdict_ok;
+        } else if (r.confidence >= 0.4) {
+            drawable = R.drawable.bg_verdict_warn;
+        } else {
+            drawable = R.drawable.bg_verdict_err;
+        }
+        tvVerifier.setBackgroundResource(drawable);
     }
 }

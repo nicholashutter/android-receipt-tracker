@@ -22,7 +22,9 @@ import com.example.receipttracker.data.ReceiptDao;
 import com.example.receipttracker.log.Logger;
 import com.example.receipttracker.match.TotalVerifier;
 import com.example.receipttracker.ocr.DetectedNumber;
+import com.example.receipttracker.ocr.MerchantClassifier;
 import com.example.receipttracker.ocr.ReceiptImageStore;
+import com.example.receipttracker.ocr.ReceiptOcr;
 import com.example.receipttracker.ocr.ReceiptParser;
 import com.example.receipttracker.util.AppExecutors;
 import com.example.receipttracker.util.MoneyUtils;
@@ -32,6 +34,7 @@ import com.google.android.material.textfield.TextInputEditText;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
@@ -93,7 +96,22 @@ public class EditReceiptActivity extends AppCompatActivity {
             String merchant = intent.getStringExtra(EXTRA_MERCHANT);
             double amount = intent.getDoubleExtra(EXTRA_AMOUNT, 0);
             long date = intent.getLongExtra(EXTRA_DATE_MILLIS, 0);
-            if (merchant != null) etMerchant.setText(merchant);
+            if (merchant != null) {
+                // Stage 2: refine the parsed merchant through the JSON
+                // classifier. If the classifier has a high-confidence
+                // match, replace the raw OCR string with the canonical
+                // form (e.g. "WHOLE FOODS" -> "Whole Foods Market").
+                // Otherwise keep the OCR string.
+                MerchantClassifier.Prediction pred = MerchantClassifier.predict(merchant);
+                String refined = (pred != null && pred.confidence >= 0.40)
+                        ? pred.name
+                        : merchant;
+                etMerchant.setText(refined);
+                if (pred != null) {
+                    Logger.i("Edit", "merchant refined: '" + merchant
+                            + "' -> '" + refined + "' (conf=" + String.format("%.2f", pred.confidence) + ")");
+                }
+            }
             if (amount > 0) etAmount.setText(String.valueOf(amount));
             if (date > 0) dateMillis = date;
         }
@@ -246,24 +264,98 @@ public class EditReceiptActivity extends AppCompatActivity {
      * recommended total and renders the verdict panel, so the activity
      * opens looking like the user already picked the right number.
      * The user can edit the amount or tap "Re-pick" to override.
+     *
+     * <p>Visual-signal path: if we have a photo on disk, re-run OCR
+     * with bounding boxes and run {@link VisualSignalDetector} on
+     * each number's bbox, so a yellow-highlighted or pen-circled
+     * number wins a *strong* boost in
+     * {@link ReceiptParser#pickCircledCandidate}. If the re-OCR
+     * fails, fall back to text-only number extraction.</p>
+     *
+     * <p>Ensemble: the final verdict is a 10-run ensemble across the
+     * top 10 candidates by P(isTotal), so the confidence reflects
+     * panel consensus rather than a single run.</p>
      */
     private void autoPickAndVerify() {
         if (rawText == null || rawText.isEmpty()) return;
         Logger.section("AUTO-PICK TOTAL");
-        cachedNumbers = ReceiptParser.extractAllNumbers(rawText);
-        if (cachedNumbers.isEmpty()) {
-            Logger.w("Edit", "autoPick: parser found 0 numbers; nothing to auto-pick");
-            return;
+        exec.diskIO().execute(() -> {
+            // Try to re-OCR for visual signals (highlighted numbers win).
+            List<DetectedNumber> numbers = tryExtractWithVisualSignals();
+            if (numbers.isEmpty()) {
+                Logger.w("Edit", "autoPick: fallback to text-only extractAllNumbers");
+                numbers = ReceiptParser.extractAllNumbers(rawText);
+            }
+            cachedNumbers = numbers;
+            if (numbers.isEmpty()) {
+                Logger.w("Edit", "autoPick: parser found 0 numbers; nothing to auto-pick");
+                return;
+            }
+            DetectedNumber picked = ReceiptParser.pickCircledCandidate(numbers);
+            if (picked == null) {
+                Logger.w("Edit", "autoPick: pickCircledCandidate returned null");
+                return;
+            }
+            Logger.i("Edit", "autoPick: chose $" + picked.value
+                    + " from line " + picked.lineIndex
+                    + " (keyword=" + picked.keyword
+                    + ", hl=" + String.format(Locale.US, "%.2f", picked.highlightScore)
+                    + ", cr=" + String.format(Locale.US, "%.2f", picked.circleScore) + ")");
+            // Use the 10-run ensemble for the final verdict.
+            runVerifierEnsemble(picked, /*autoPicked=*/true);
+        });
+    }
+
+    /**
+     * Re-OCRs the photo at {@code photoPath} and returns detected
+     * numbers with per-bbox visual-signal scores. Returns an empty
+     * list if the photo can't be decoded or OCR fails — the caller
+     * falls back to text-only extraction in that case.
+     */
+    private List<DetectedNumber> tryExtractWithVisualSignals() {
+        if (photoPath == null) return Collections.emptyList();
+        try {
+            Bitmap bmp = ReceiptImageStore.decodeSampled(photoPath, 1600, 1600);
+            if (bmp == null) {
+                Logger.w("Edit", "tryExtractWithVisualSignals: failed to decode bitmap");
+                return Collections.emptyList();
+            }
+            List<ReceiptOcr.OcrLine> lines = ReceiptOcr.recognizeWithBoxes(bmp);
+            if (lines == null || lines.isEmpty()) {
+                Logger.w("Edit", "tryExtractWithVisualSignals: structured OCR returned 0 lines");
+                return Collections.emptyList();
+            }
+            return ReceiptParser.extractAllNumbersWithVisualSignals(bmp, lines);
+        } catch (Throwable t) {
+            Logger.e("Edit", "tryExtractWithVisualSignals: failed", t);
+            return Collections.emptyList();
         }
-        DetectedNumber picked = ReceiptParser.pickCircledCandidate(cachedNumbers);
-        if (picked == null) {
-            Logger.w("Edit", "autoPick: pickCircledCandidate returned null");
-            return;
-        }
-        Logger.i("Edit", "autoPick: chose $" + picked.value
-                + " from line " + picked.lineIndex
-                + " (keyword=" + picked.keyword + ")");
-        runVerifier(picked, /*autoPicked=*/true);
+    }
+
+    /**
+     * Runs the 10-run ensemble verifier and renders the result. Falls
+     * back to a single verify() call on failure.
+     */
+    private void runVerifierEnsemble(DetectedNumber picked, boolean autoPicked) {
+        final double entered = parseAmount();
+        final TotalVerifier.Result[] holder = new TotalVerifier.Result[1];
+        Logger.i("Edit", "runVerifierEnsemble: entered=" + entered
+                + ", picked=" + picked.value + ", autoPicked=" + autoPicked);
+        exec.diskIO().execute(() -> {
+            try {
+                holder[0] = TotalVerifier.verifyEnsemble(picked.value, cachedNumbers, entered,
+                        TotalVerifier.DEFAULT_ENSEMBLE_SIZE);
+            } catch (Throwable t) {
+                Logger.e("Edit", "verifyEnsemble failed, falling back to single verify", t);
+                holder[0] = TotalVerifier.verify(picked.value, cachedNumbers, entered);
+            }
+            final TotalVerifier.Result r = holder[0];
+            runOnUiThread(() -> {
+                renderVerifier(picked, r, entered, autoPicked);
+                lastVerifiedTotal = r.recommendedTotal;
+                budgetPromptHandled = false;
+            });
+        });
     }
 
     private void onMarkTotalClicked() {
@@ -335,12 +427,22 @@ public class EditReceiptActivity extends AppCompatActivity {
                     "Marked:  $%.2f  (line %d: %s)%n",
                     picked.value, picked.lineIndex, trim(picked.line, 50)));
         }
+        if (picked.isVisuallyEmphasised()) {
+            body.append(String.format(Locale.US,
+                    "  Visually emphasised (hl=%.2f cr=%.2f)%n",
+                    picked.highlightScore, picked.circleScore));
+        }
         if (entered > 0) {
             body.append(String.format(Locale.US, "Entered: $%.2f%n", entered));
         }
         body.append(String.format(Locale.US, "%nVerifier verdict:%n"));
         body.append(String.format(Locale.US, "  Total: $%.2f   (source: %s)%n", r.recommendedTotal, r.recommendedSource));
         body.append(String.format(Locale.US, "  Confidence: %.0f%%%n", r.confidence * 100));
+        if (r.ensembleSize > 1) {
+            body.append(String.format(Locale.US, "  Ensemble: %d/%d runs voted $%.2f  (consensus conf=%.0f%%)%n",
+                    r.ensembleVotesForWinner, r.ensembleSize, r.recommendedTotal,
+                    r.ensembleConfidence * 100));
+        }
         body.append(String.format(Locale.US, "  P(circled is a price):  %.2f%n", r.priceProbability));
         body.append(String.format(Locale.US, "  P(circled is the total): %.2f  (best other: %.2f)%n",
                 r.candidateProbability, r.bestAlternativeProbability));

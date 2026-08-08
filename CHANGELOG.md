@@ -5,28 +5,81 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased] — 2026-08-07
 
 ### Added
-- **OCR auto-picks the total.** `ReceiptParser.pickCircledCandidate(numbers)`
-  picks the most likely "circled" number on a freshly scanned receipt
-  using a three-tier heuristic: a number on a TOTAL-keyword line
-  first, then the largest number in the bottom half of the receipt,
-  then the largest number overall. `EditReceiptActivity` runs this
-  on every new-receipt open, runs the verifier, and pre-fills the
-  amount field with the recommended total. The user can still edit
-  the amount as a correction, or tap "Re-pick the total" (an
-  outlined-button override, no longer the primary action) to pick a
-  different number from the detected list. The verdict panel
-  renders with the header "Auto-picked by OCR" so it's clear where
-  the value came from.
+- **Visual signal detection.** `VisualSignalDetector` reads the
+  actual pixels inside each OCR-detected number's bounding box and
+  scores two "the user marked this on purpose" signals: a yellow
+  highlighter swatch (R≥200, G≥178, B≤102 → fraction of yellow
+  pixels in the bbox) and a pen circle (ring-vs-core dark-pixel
+  ratio, with an aspect-ratio filter to reject wide line bboxes).
+  The scores are passed through `ReceiptOcr.recognizeWithBoxes()`
+  (which returns structured `OcrLine` + per-element bboxes, with the
+  old `recognizeText()` preserved for back-compat) and attached to
+  each `DetectedNumber` as `highlightScore` and `circleScore`.
+  `ReceiptParser.pickCircledCandidate` now has a Priority 0 that
+  returns the most-emphasised number before any text heuristic, and
+  the two scores are passed straight through as features 9 and 10
+  of the `LinearLearner` (11 features total, up from 9). Trained
+  weights are strongly positive (around +1.3 for highlight, +1.06
+  for circle on a representative run). On open, `EditReceiptActivity`
+  re-runs OCR against the saved photo so the visual signals reflect
+  the image at edit time, not the scan-time text alone. Motivation:
+  a yellow highlight or pen circle is the strongest "this is the
+  total" signal a human can leave on a receipt, and treating it as
+  one is a much bigger win than any text heuristic.
+
+- **10-run ensemble verifier.** `TotalVerifier.verifyEnsemble(seed,
+  allNumbers, entered, N)` runs the full verify pipeline against
+  the top-N candidates ranked by `P(isTotal)`, then votes on
+  `recommendedTotal`. Default N=10 (`DEFAULT_ENSEMBLE_SIZE`); the
+  ensemble winner is whichever value won the most votes. Ensemble
+  confidence blends three signals: 55% of the max per-run
+  confidence for the winner, 30% of the average per-run confidence
+  for the winner, and 15% of the vote share (so 9/10 votes = 0.90).
+  `TotalVerifier.Result` is extended with `ensembleVotesForWinner`,
+  `ensembleSize`, `ensembleConfidence`, and `ensembleSummary`
+  (`"9/10 -> $47.83  max-conf=0.93  avg-conf=0.84  votes=90%"`).
+  The editor's auto-pick path calls `verifyEnsemble()` on open; the
+  "Re-pick" override still calls a single `verify()` for fast
+  feedback. Motivation: a single pass is sensitive to noise (a
+  stray "0.99" or "$2.99" can be misread as the total), but
+  voting across 10 candidates smooths that out. Verified on
+  `noisy_receipt.jpg`: single-pass auto-pick chose $2.99
+  (false-positive circle), ensemble correctly voted 9/10 for
+  $47.83.
+
+- **JSON-backed merchant classifier.** `assets/merchants.json` is
+  the source of truth — about 100 common US merchants across
+  grocery, restaurant, coffee, gas, pharmacy, hardware,
+  electronics, apparel, home, transport, delivery, shipping, and
+  online categories, each with a list of case-insensitive aliases
+  and a 0..1 popularity weight. `MerchantClassifier` reads the
+  JSON once at app startup on a background thread (wired in
+  `ReceiptTrackerApp.onCreate()`) and caches it. `predict(raw)`
+  returns a name + category + [0,1] confidence; `topN(raw, n)`
+  returns the N best matches for ranked display. Scoring is
+  `weight × best_alias_match`, where a whole-string alias match
+  scores 1.0 and a token-level substring match scores as a
+  hit/total ratio; the final confidence is a linear blend of the
+  entry's weight and the gap to the runner-up (a clear winner with
+  a high popularity weight lands near 1.0, a tight race around
+  0.5). `ParsedReceipt.merchantPrediction` carries the prediction
+  alongside the raw merchant string. On open, `EditReceiptActivity`
+  replaces the parsed merchant with the canonical name when the
+  prediction confidence is ≥ 0.40, and leaves the user's edit alone
+  otherwise. Motivation: the merchant line is the largest text at
+  the top of most US receipts and OCR frequently merges it with an
+  address or phone number, so a small curated list of common
+  chains + their known aliases normalises "WHOLE FOODS" / "WFM" /
+  "Whole Foods Market" all to "Whole Foods Market" without
+  overfitting to a single merchant.
 
 ### Changed
-- `EditReceiptActivity` no longer asks the user to mark a number on
-  every scan. The flow is now: scan → editor opens with amount
-  pre-filled → user confirms by tapping Save (or edits / re-picks if
-  needed). The "Pick & verify the total" filled button is now an
-  outlined "Re-pick the total" override.
-- `TestPipelineActivity.openInEditor()` no longer pre-inserts a
-  receipt row. It now passes the OCR'd values as a new-receipt
-  intent, which lets the editor's auto-pick path fire.
+- `LinearLearner` is now an 11-feature logistic regression (was
+  9 features). The new `highlightScore` and `circleScore`
+  features come straight from `VisualSignalDetector` via
+  `DetectedNumber`, with strongly positive trained weights — they
+  lift a visually-emphasised number above a non-emphasised one
+  even when the text-based features are noisy.
 
 ## [0.3.0] — 2026-08-07
 
@@ -72,11 +125,33 @@ All notable changes to this project will be documented in this file. The format 
   icons (`ic_budget.xml`, `ic_add.xml`), and a `dialog_create_budget.xml`
   with Name + Max + "Make this the active budget" checkbox round out the
   set.
+- **OCR auto-picks the total.** `ReceiptParser.pickCircledCandidate(numbers)`
+  picks the most likely "circled" number on a freshly scanned receipt
+  using a three-tier heuristic: a number on a TOTAL-keyword line
+  first, then the largest number in the bottom half of the receipt,
+  then the largest number overall. `EditReceiptActivity` runs this
+  on every new-receipt open, runs the verifier, and pre-fills the
+  amount field with the recommended total. The user can still edit
+  the amount as a correction, or tap "Re-pick the total" (an
+  outlined-button override, no longer the primary action) to pick a
+  different number from the detected list. The verdict panel
+  renders with the header "Auto-picked by OCR" so it's clear where
+  the value came from.
 - **Main screen refresh.** New "Budgets" secondary tile (indigo) and a
   full-width "Active budget" card (with progress bar) replace the
   old two-pill row. The receipts count and transactions count now use
   `countActiveLive` / `countLive` respectively so soft-deleted rows
   don't inflate the headline number.
+
+### Changed
+- `EditReceiptActivity` no longer asks the user to mark a number on
+  every scan. The flow is now: scan → editor opens with amount
+  pre-filled → user confirms by tapping Save (or edits / re-picks if
+  needed). The "Pick & verify the total" filled button is now an
+  outlined "Re-pick the total" override.
+- `TestPipelineActivity.openInEditor()` no longer pre-inserts a
+  receipt row. It now passes the OCR'd values as a new-receipt
+  intent, which lets the editor's auto-pick path fire.
 
 ### Fixed
 - **Main-thread DB crash on the active-budget card.** `MainActivity` was

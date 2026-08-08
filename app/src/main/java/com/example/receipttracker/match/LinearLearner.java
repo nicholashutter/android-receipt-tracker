@@ -6,8 +6,6 @@ import com.example.receipttracker.log.Logger;
 import com.example.receipttracker.ocr.DetectedNumber;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
@@ -28,7 +26,14 @@ import java.util.Locale;
  *   <li>{@code closeToSubPlusTax}   – 1 if within $1 of subtotal+tax+tip</li>
  *   <li>{@code looksLikeDate}       – 1 if the line has a "n/n" pattern (date fragment)</li>
  *   <li>{@code looksLikeCode}       – 1 if integer and >= 100 (auth code, txn id)</li>
+ *   <li>{@code highlightScore}      – 0..1, fraction of yellow pixels in the bounding box</li>
+ *   <li>{@code circleScore}         – 0..1, ring-vs-core dark pixel ratio (pen circle heuristic)</li>
  * </ul>
+ *
+ * <p>The two visual-signal features are weighted strongly positive:
+ * a human deliberately marked a number with highlighter or a pen
+ * circle, and that's the strongest "this is the total" signal we
+ * can get from the source photo.</p>
  *
  * <p>Output: sigmoid(weights · features + bias) ∈ [0, 1] — interpretable
  * as P(this price is the real total).</p>
@@ -46,7 +51,9 @@ public final class LinearLearner {
             "belowSubtotal",
             "closeToSubPlusTax",
             "looksLikeDate",
-            "looksLikeCode"
+            "looksLikeCode",
+            "highlightScore",
+            "circleScore"
     };
 
     public static final int FEATURE_COUNT = FEATURE_NAMES.length;
@@ -92,7 +99,20 @@ public final class LinearLearner {
         boolean integer = (n.value == Math.floor(n.value));
         f[8] = (integer && n.value >= 100 && n.value < 1_000_000) ? 1.0 : 0.0;
 
+        // Visual signals: pass the raw 0..1 scores straight through.
+        // The strong positive weight in the trained model will lift
+        // emphasised numbers above non-emphasised ones even when the
+        // text-based features are noisy.
+        f[9]  = clamp01(n.highlightScore);
+        f[10] = clamp01(n.circleScore);
+
         return f;
+    }
+
+    private static double clamp01(double v) {
+        if (v < 0) return 0;
+        if (v > 1) return 1;
+        return v;
     }
 
     // ---------- trained model ----------
@@ -154,25 +174,42 @@ public final class LinearLearner {
 
     private static final List<LogisticRegression.Example> TRAINING_DATA = buildTrainingData();
 
+    /**
+     * 11 features per example. The visual-signal features are present
+     * in every example, but most examples set them to 0 to match the
+     * historical "no visual signal" baseline. The handful of emphasised
+     * positive examples (with highlight=0.8 or circle=0.5) teach the
+     * model to give those signals a strong positive weight.
+     */
     private static List<LogisticRegression.Example> buildTrainingData() {
         List<LogisticRegression.Example> ex = new ArrayList<>();
+
         // === POSITIVE (label=1): looks like a real total ===
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0}, 1.0));
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0}, 1.0));
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0}, 1.0));
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0}, 1.0));
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 1,1, 1, 0, 1, 0, 0}, 1.0));
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 0, 0, 0}, 1.0));
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0}, 1.0));
+        // hasTotal, hasComp, isLargest, inBottom, hasDec, belowSub, close, date, code, hl, cr
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 0, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        // Highlighted (yellow highlighter) — the visual signal alone is enough to call it a total.
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.8, 0.0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.6, 0.0}, 1.0));
+        // Circled (pen circle around a number) — same: strong positive.
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.0, 0.6}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.0, 0.5}, 1.0));
 
         // === NEGATIVE (label=0): NOT a total ===
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 0, 0, 0, 0}, 0.0));
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0}, 0.0));
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0}, 0.0));
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 1, 0, 0, 0}, 0.0));
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 1, 0}, 0.0));
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 1}, 0.0));
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 0, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 1, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 1, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 1, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 0, 0, 0}, 0.0));
+        // A non-emphasised subtotal is still a subtotal, not a total.
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,1, 1, 0, 0, 0, 0, 0, 0}, 0.0));
         return ex;
     }
 }

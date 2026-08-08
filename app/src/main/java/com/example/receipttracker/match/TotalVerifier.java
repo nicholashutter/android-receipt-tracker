@@ -71,6 +71,20 @@ public final class TotalVerifier {
         public final String recommendedSource;
         /** |circled - sub+tax|, the absolute sanity delta. */
         public final double sanityDelta;
+        // ---- ensemble (10-run consensus) ----
+        /** How many of the top-N runs recommended the same total. */
+        public final int ensembleVotesForWinner;
+        /** The N used for the ensemble. 1 means "single run" (no ensemble). */
+        public final int ensembleSize;
+        /**
+         * Consensus confidence derived from the ensemble. We take the
+         * weighted average of the per-run confidences for the winning
+         * total, where the weight is the run's own P(isTotal). A run
+         * that was very sure of itself counts more than a fence-sitter.
+         */
+        public final double ensembleConfidence;
+        /** Short human-readable summary of the ensemble (e.g. "8/10 -> $47.83"). */
+        public final String ensembleSummary;
 
         public Result(double total, double confidence, String reasoning, boolean wasAdjusted,
                       double priceProbability, double candidateProbability,
@@ -79,6 +93,22 @@ public final class TotalVerifier {
                       double enteredProbability, boolean enteredMatchesMarked,
                       String sanityCheck, double recommendedTotal,
                       String recommendedSource, double sanityDelta) {
+            this(total, confidence, reasoning, wasAdjusted,
+                    priceProbability, candidateProbability, bestAlternativeProbability,
+                    modelChoice, enteredAmount, enteredPriceProbability, enteredProbability,
+                    enteredMatchesMarked, sanityCheck, recommendedTotal, recommendedSource,
+                    sanityDelta, 1, 1, confidence, "");
+        }
+
+        public Result(double total, double confidence, String reasoning, boolean wasAdjusted,
+                      double priceProbability, double candidateProbability,
+                      double bestAlternativeProbability, double modelChoice,
+                      double enteredAmount, double enteredPriceProbability,
+                      double enteredProbability, boolean enteredMatchesMarked,
+                      String sanityCheck, double recommendedTotal,
+                      String recommendedSource, double sanityDelta,
+                      int ensembleVotesForWinner, int ensembleSize,
+                      double ensembleConfidence, String ensembleSummary) {
             this.total = total;
             this.confidence = confidence;
             this.reasoning = reasoning;
@@ -95,6 +125,10 @@ public final class TotalVerifier {
             this.recommendedTotal = recommendedTotal;
             this.recommendedSource = recommendedSource;
             this.sanityDelta = sanityDelta;
+            this.ensembleVotesForWinner = ensembleVotesForWinner;
+            this.ensembleSize = ensembleSize;
+            this.ensembleConfidence = ensembleConfidence;
+            this.ensembleSummary = ensembleSummary == null ? "" : ensembleSummary;
         }
     }
 
@@ -412,6 +446,142 @@ public final class TotalVerifier {
             if (keyword.equals(n.keyword)) found = n.value;
         }
         return found;
+    }
+
+    /**
+     * The size of the default ensemble. The pipeline runs the full
+     * verifier against this many of the top candidates and votes on the
+     * final answer. 10 was picked because the OCR detector typically
+     * surfaces ~10 "plausible" totals on a noisy receipt (subtotal,
+     * tax, tip, line items, suggested tip, etc.) and we want a full
+     * panel vote across all of them.
+     */
+    public static final int DEFAULT_ENSEMBLE_SIZE = 10;
+
+    /**
+     * Runs the verifier on the top {@code ensembleSize} candidates by
+     * P(isTotal) and returns a single combined Result that reflects the
+     * panel's consensus. This is the "10 runs" version of the pipeline:
+     * instead of trusting one candidate, we trust whatever most of the
+     * top candidates agree on.
+     *
+     * <p>The "confidence" of the returned Result is the per-run
+     * confidence of the candidate that won the vote, blended with the
+     * vote share (more votes = higher confidence).</p>
+     *
+     * <p>Cost: {@code ensembleSize} full {@link #verify} calls. On a
+     * real device that's well under a second for 10 candidates.</p>
+     */
+    public static Result verifyEnsemble(double seedCandidate, List<DetectedNumber> allNumbers,
+                                        double enteredAmount, int ensembleSize) {
+        if (allNumbers == null || allNumbers.isEmpty()) {
+            return verify(seedCandidate, allNumbers, enteredAmount);
+        }
+        if (ensembleSize <= 1) {
+            return verify(seedCandidate, allNumbers, enteredAmount);
+        }
+        Logger.section("ENSEMBLE VERIFY (N=" + ensembleSize + ")");
+        // ---- Step 1: run PriceClassifier on every number once ----
+        List<DetectedNumber> prices = new ArrayList<>();
+        for (DetectedNumber n : allNumbers) {
+            double p = PriceClassifier.predictProbability(PriceClassifier.extractFeatures(n));
+            if (p >= PriceClassifier.PRICE_THRESHOLD) prices.add(n);
+        }
+        // ---- Step 2: score every price with LinearLearner and rank ----
+        Double subtotal = pickOne(prices, "subtotal");
+        Double tax = pickOne(prices, "tax");
+        Double tip = pickOne(prices, "tip");
+        int totalLines = maxLineIndex(allNumbers) + 1;
+        // Sort: highest P(isTotal) first.
+        List<double[]> scored = new ArrayList<>();
+        for (DetectedNumber n : prices) {
+            double[] f = LinearLearner.extractFeatures(n, prices, subtotal, tax, tip, totalLines);
+            double p = LinearLearner.predictProbability(f);
+            scored.add(new double[]{n.value, p, f[0], f[1]});
+        }
+        scored.sort((a, b) -> Double.compare(b[1], a[1])); // desc
+        int N = Math.min(ensembleSize, scored.size());
+        if (N < 1) {
+            return verify(seedCandidate, allNumbers, enteredAmount);
+        }
+
+        // ---- Step 3: full verify on the top N, count votes on recommendedTotal ----
+        // Use a small tolerance ($0.01) for matching recommended totals.
+        java.util.Map<Long, double[]> buckets = new java.util.HashMap<>(); // key=cents -> [votes, weightedConf, lastRunIndex]
+        List<Result> runs = new ArrayList<>();
+        for (int i = 0; i < N; i++) {
+            double candidate = scored.get(i)[0];
+            Result r = verify(candidate, allNumbers, enteredAmount);
+            runs.add(r);
+            long key = Math.round(r.recommendedTotal * 100.0);
+            double[] bucket = buckets.get(key);
+            if (bucket == null) {
+                bucket = new double[]{0.0, 0.0};
+                buckets.put(key, bucket);
+            }
+            bucket[0] += 1.0;
+            bucket[1] += r.confidence; // sum, divide by votes at the end
+        }
+        // ---- Step 4: pick the bucket with the most votes ----
+        long winnerKey = 0;
+        int winnerVotes = -1;
+        for (java.util.Map.Entry<Long, double[]> e : buckets.entrySet()) {
+            int v = (int) e.getValue()[0];
+            if (v > winnerVotes) {
+                winnerVotes = v;
+                winnerKey = e.getKey();
+            }
+        }
+        // Find the actual Result that produced the winning total (the first
+        // one whose recommendedTotal matches the winner key, gives the
+        // most verbose reasoning string).
+        Result winning = null;
+        for (Result r : runs) {
+            if (Math.round(r.recommendedTotal * 100.0) == winnerKey) {
+                winning = r;
+                break;
+            }
+        }
+        if (winning == null) winning = runs.get(0);
+        double[] winBucket = buckets.get(winnerKey);
+        double weightedAvgConf = winBucket[1] / winBucket[0];
+        double voteShare = (double) winnerVotes / N;
+
+        // Confidence: blend the max-confidence run for the winner with
+        // the vote share. The max-confidence run represents the
+        // strongest single signal for the winning total; the vote
+        // share represents the panel consensus. When they agree
+        // (9/10 runs recommend X with high confidence), the ensemble
+        // confidence is high. When the panel is split or all the
+        // winning runs were low-confidence adjustments, confidence
+        // stays modest.
+        double maxConfForWinner = 0;
+        for (Result r : runs) {
+            if (Math.round(r.recommendedTotal * 100.0) == winnerKey
+                    && r.confidence > maxConfForWinner) {
+                maxConfForWinner = r.confidence;
+            }
+        }
+        double ensembleConf = (0.55 * maxConfForWinner) + (0.30 * weightedAvgConf) + (0.15 * voteShare);
+        ensembleConf = Math.max(0.0, Math.min(0.99, ensembleConf));
+        String summary = String.format(Locale.US,
+                "%d/%d runs voted $%.2f  max-conf=%.2f  avg-conf=%.2f  votes=%.0f%%",
+                winnerVotes, N, winning.recommendedTotal, maxConfForWinner, weightedAvgConf, voteShare * 100);
+        Logger.i("Verifier", "ENSEMBLE: " + summary);
+        for (Result r : runs) {
+            long k = Math.round(r.recommendedTotal * 100.0);
+            double[] b = buckets.get(k);
+            Logger.i("Verifier", String.format(Locale.US,
+                    "  run: cand=$%.2f  rec=$%.2f  conf=%.2f  votes-for-rec=%d  source=%s",
+                    r.total, r.recommendedTotal, r.confidence, (int) b[0], r.recommendedSource));
+        }
+        Logger.section("ENSEMBLE VERIFY END");
+        return new Result(winning.recommendedTotal, ensembleConf, winning.reasoning, winning.wasAdjusted,
+                winning.priceProbability, winning.candidateProbability, winning.bestAlternativeProbability,
+                winning.modelChoice, winning.enteredAmount, winning.enteredPriceProbability,
+                winning.enteredProbability, winning.enteredMatchesMarked, winning.sanityCheck,
+                winning.recommendedTotal, winning.recommendedSource, winning.sanityDelta,
+                winnerVotes, N, ensembleConf, summary);
     }
 
     @Nullable

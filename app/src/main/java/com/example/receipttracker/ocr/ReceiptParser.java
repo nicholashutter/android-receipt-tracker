@@ -68,12 +68,16 @@ public final class ReceiptParser {
         Logger.i("Parser", "Parsing " + lines.length + " lines, " + rawText.length() + " chars");
 
         out.merchant = guessMerchant(lines);
+        out.merchantPrediction = (out.merchant == null) ? null
+                : MerchantClassifier.predict(out.merchant);
         out.dateMillis = guessDate(rawText);
         out.amount = guessAmount(lines);
+        out.rawText = rawText;
 
         long ms = System.currentTimeMillis() - t0;
         Logger.i("Parser", "Result: merchant='" + out.merchant
-                + "', dateMillis=" + out.dateMillis
+                + "', merchantPred=" + (out.merchantPrediction == null ? "(none)" : out.merchantPrediction.name)
+                + ", dateMillis=" + out.dateMillis
                 + ", amount=" + out.amount + "  (" + ms + "ms)");
         return out;
     }
@@ -397,6 +401,105 @@ public final class ReceiptParser {
         return null;
     }
 
+    // ---------- public: extract all numbers WITH visual signals ----------
+
+    /**
+     * Same logic as {@link #extractAllNumbers(String)}, but walks the
+     * structured OCR lines (with bounding boxes) so each emitted
+     * DetectedNumber can carry its visual-signal scores (yellow
+     * highlighter, pen circle) sampled from the source bitmap.
+     *
+     * <p>Pairing rule: for each line that contains money-shaped
+     * matches, we look through that line's OCR elements and pair each
+     * money match to the element whose text contains the value. The
+     * element's bounding box drives the visual-signal detector. If a
+     * line has no element-level matches (the whole line was emitted as
+     * one element by ML Kit) we fall back to the line's bounding box
+     * for every money match on that line.</p>
+     *
+     * <p>If {@code bitmap} is null, the visual-signal scores default
+     * to 0.0 (the auto-pick still works, just without the highlighted
+     * priority).</p>
+     */
+    public static java.util.List<DetectedNumber> extractAllNumbersWithVisualSignals(
+            @Nullable android.graphics.Bitmap bitmap,
+            java.util.List<ReceiptOcr.OcrLine> ocrLines) {
+        java.util.List<DetectedNumber> out = new java.util.ArrayList<>();
+        if (ocrLines == null || ocrLines.isEmpty()) return out;
+
+        int n = ocrLines.size();
+        String[] lineTexts = new String[n];
+        boolean[] hasNumber = new boolean[n];
+        for (int i = 0; i < n; i++) {
+            String t = ocrLines.get(i).text;
+            lineTexts[i] = t == null ? "" : t;
+            hasNumber[i] = !extractNumbers(lineTexts[i].trim()).isEmpty();
+        }
+        // Same keyword-propagation as the text-only pass.
+        String[] lineKeywords = new String[n];
+        for (int i = 0; i < n; i++) {
+            if (!hasNumber[i]) continue;
+            String line = lineTexts[i].trim();
+            if (detectVerifierKeyword(line) != null) continue;
+            String kw = nearestKeyword(lineTexts, hasNumber, i, -1);
+            if (kw == null) kw = nearestKeyword(lineTexts, hasNumber, i, +1);
+            if (kw != null) lineKeywords[i] = kw;
+        }
+
+        int emphasisedCount = 0;
+        for (int i = 0; i < n; i++) {
+            if (!hasNumber[i]) continue;
+            String line = lineTexts[i].trim();
+            String own = detectVerifierKeyword(line);
+            String keyword = (own != null) ? own : lineKeywords[i];
+            ReceiptOcr.OcrLine ocrLine = ocrLines.get(i);
+
+            // Try element-level first.
+            boolean usedElement = false;
+            if (ocrLine.elements != null) {
+                for (ReceiptOcr.OcrElement el : ocrLine.elements) {
+                    java.util.List<String> nums = extractNumbers(
+                            el.text == null ? "" : el.text.trim());
+                    for (String num : nums) {
+                        try {
+                            double v = Double.parseDouble(num);
+                            if (v <= 0) continue;
+                            VisualSignalDetector.Signals sig = (bitmap != null && el.bbox != null)
+                                    ? VisualSignalDetector.detect(bitmap, el.bbox)
+                                    : new VisualSignalDetector.Signals(0f, 0f);
+                            out.add(new DetectedNumber(v, line, i, keyword,
+                                    sig.highlightScore, sig.circleScore, el.bbox));
+                            if (sig.isEmphasised()) emphasisedCount++;
+                            usedElement = true;
+                        } catch (NumberFormatException ignored) { }
+                    }
+                }
+            }
+            if (usedElement) continue;
+
+            // Fallback: line-level bbox for every money match on this
+            // line. This handles the case where ML Kit emitted the
+            // whole line as one element.
+            java.util.List<String> nums = extractNumbers(line);
+            VisualSignalDetector.Signals sig = (bitmap != null && ocrLine.bbox != null)
+                    ? VisualSignalDetector.detect(bitmap, ocrLine.bbox)
+                    : new VisualSignalDetector.Signals(0f, 0f);
+            for (String num : nums) {
+                try {
+                    double v = Double.parseDouble(num);
+                    if (v <= 0) continue;
+                    out.add(new DetectedNumber(v, line, i, keyword,
+                            sig.highlightScore, sig.circleScore, ocrLine.bbox));
+                    if (sig.isEmphasised()) emphasisedCount++;
+                } catch (NumberFormatException ignored) { }
+            }
+        }
+
+        Logger.i("Parser", "extractAllNumbersWithVisualSignals: " + out.size()
+                + " numbers from " + n + " lines; " + emphasisedCount + " visually emphasised");
+        return out;
+    }
+
     // ---------- auto-pick "the circled total" ----------
 
     /**
@@ -412,12 +515,30 @@ public final class ReceiptParser {
      * <p>Why this exists: the user shouldn't have to re-pick the total
      * the OCR almost certainly got right. We treat the OCR's first
      * guess as the default and let the user correct it.</p>
+     *
+     * <p>If any number has been visually emphasised (yellow highlight
+     * or pen circle), it gets a *strong* boost — those signals are
+     * worth more than all the text heuristics combined, because a
+     * human deliberately marked that number for the OCR to find.</p>
      */
     @Nullable
     public static DetectedNumber pickCircledCandidate(List<DetectedNumber> numbers) {
         if (numbers == null || numbers.isEmpty()) {
             Logger.w("Parser", "pickCircledCandidate: no numbers to choose from");
             return null;
+        }
+
+        // Priority 0: a visually-emphasised number (yellow highlighter
+        // or pen circle). This is the strongest "user marked this on
+        // purpose" signal we have — the user went out of their way
+        // to draw attention to it. Return the highest-emphasis one.
+        DetectedNumber emphasised = pickMostEmphasised(numbers);
+        if (emphasised != null) {
+            Logger.i("Parser", "pickCircledCandidate: VISUALLY EMPHASISED -> $"
+                    + emphasised.value + " (line " + emphasised.lineIndex
+                    + " hl=" + String.format("%.2f", emphasised.highlightScore)
+                    + " cr=" + String.format("%.2f", emphasised.circleScore) + ")");
+            return emphasised;
         }
 
         // Priority 1: a number on a TOTAL keyword line. Real receipts
@@ -464,6 +585,31 @@ public final class ReceiptParser {
         Logger.i("Parser", "pickCircledCandidate: receipt-wide largest -> $"
                 + largest.value + " (line " + largest.lineIndex + ")");
         return largest;
+    }
+
+    /**
+     * Picks the number with the highest combined visual-signal score
+     * across the list. Returns null if nothing crosses the per-signal
+     * threshold (highlights need 0.20, circles 0.25). Among ties, the
+     * one closer to a TOTAL keyword wins, then the higher-value one.
+     */
+    @Nullable
+    private static DetectedNumber pickMostEmphasised(List<DetectedNumber> numbers) {
+        DetectedNumber best = null;
+        float bestScore = 0f;
+        for (DetectedNumber n : numbers) {
+            if (!n.isVisuallyEmphasised()) continue;
+            float score = (float) (n.highlightScore * 0.66 + n.circleScore * 0.34);
+            // Tiny tie-breaker: numbers on a TOTAL keyword line win
+            // ties so we don't pick an emphasised subtotal over a
+            // non-emphasised total.
+            if (n.keyword != null && isTotalKeyword(n.keyword)) score += 0.01f;
+            if (best == null || score > bestScore) {
+                best = n;
+                bestScore = score;
+            }
+        }
+        return best;
     }
 
     private static boolean isTotalKeyword(String kw) {

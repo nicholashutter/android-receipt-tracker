@@ -5,11 +5,12 @@ import androidx.annotation.Nullable;
 
 /**
  * One number that the parser found on the receipt, plus the context
- * (line text, line index, optional nearby keyword) we need to make
- * sense of it.
+ * (line text, line index, optional nearby keyword, visual-signal
+ * scores from {@link VisualSignalDetector}) we need to make sense of
+ * it.
  *
- * Used both by the auto-detection pass and the user-driven "mark as
- * total" flow — {@link TotalVerifier} reads a list of these.
+ * <p>Used both by the auto-detection pass and the user-driven "mark as
+ * total" flow — {@code TotalVerifier} reads a list of these.</p>
  */
 public final class DetectedNumber {
 
@@ -29,16 +30,48 @@ public final class DetectedNumber {
      */
     @Nullable public final String keyword;
 
-    public DetectedNumber(double value, @NonNull String line, int lineIndex, @Nullable String keyword) {
+    /**
+     * Visual-signal scores from {@link VisualSignalDetector}. Both
+     * default to 0.0 (no signal) when the bitmap wasn't supplied or
+     * the bounding box couldn't be located. A non-zero highlight or
+     * circle score is a strong "this is the total" indicator.
+     */
+    public final float highlightScore;
+    public final float circleScore;
+
+    /** Bounding box of the number within the source image, in pixels. */
+    @Nullable public final android.graphics.Rect bbox;
+
+    public DetectedNumber(double value, @NonNull String line, int lineIndex,
+                          @Nullable String keyword) {
+        this(value, line, lineIndex, keyword, 0f, 0f, null);
+    }
+
+    public DetectedNumber(double value, @NonNull String line, int lineIndex,
+                          @Nullable String keyword, float highlightScore,
+                          float circleScore, @Nullable android.graphics.Rect bbox) {
         this.value = value;
         this.line = line;
         this.lineIndex = lineIndex;
         this.keyword = keyword;
+        this.highlightScore = highlightScore;
+        this.circleScore = circleScore;
+        this.bbox = bbox;
+    }
+
+    /** True if the user marked this number visually (highlighter or circle). */
+    public boolean isVisuallyEmphasised() {
+        return highlightScore >= 0.20f || circleScore >= 0.25f;
     }
 
     @Override
     public String toString() {
-        if (keyword == null) return String.valueOf(value);
-        return value + " (line " + lineIndex + ", keyword=" + keyword + ")";
+        String base = keyword == null
+                ? String.valueOf(value)
+                : value + " (line " + lineIndex + ", keyword=" + keyword + ")";
+        if (isVisuallyEmphasised()) {
+            return base + String.format(" [hl=%.2f cr=%.2f]", highlightScore, circleScore);
+        }
+        return base;
     }
 }

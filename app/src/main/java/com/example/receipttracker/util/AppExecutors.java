@@ -1,12 +1,18 @@
 package com.example.receipttracker.util;
 
+
 import android.os.Handler;
+
 import android.os.Looper;
+
 
 import androidx.annotation.NonNull;
 
+
 import java.util.concurrent.Executor;
+
 import java.util.concurrent.Executors;
+
 
 /**
  * Tiny two-executor pool shared by the app.
@@ -24,22 +30,31 @@ public final class AppExecutors {
 
     private static final AppExecutors INSTANCE = new AppExecutors();
 
+
     public static AppExecutors get() { return INSTANCE; }
 
+
     private final Executor diskIO;
+
     private final Executor mainThread;
+
 
     private AppExecutors() {
         this.diskIO = Executors.newSingleThreadExecutor();
+
         this.mainThread = new MainThreadExecutor();
     }
 
+
     public Executor diskIO() { return diskIO; }
+
 
     public Executor mainThread() { return mainThread; }
 
+
     private static class MainThreadExecutor implements Executor {
         private final Handler handler = new Handler(Looper.getMainLooper());
+
         @Override
         public void execute(@NonNull Runnable command) {
             handler.post(command);

@@ -1,9 +1,14 @@
 package com.example.receipttracker.data;
 
+
 import androidx.annotation.Nullable;
+
 import androidx.room.Entity;
+
 import androidx.room.Index;
+
 import androidx.room.PrimaryKey;
+
 
 /**
  * A user-defined budget. Receipts can be linked to at most one budget via
@@ -27,29 +32,41 @@ public class Budget {
     @PrimaryKey(autoGenerate = true)
     public long id;
 
+
     /** Display name, e.g. "Groceries August". */
     public String name;
+
 
     /** The cap. Spent/max is shown on the main screen and detail screen. */
     public double maxAmount;
 
+
     public long createdAt;
+
 
     /** Exactly one budget should have isActive=1. Enforced in BudgetDao. */
     public boolean isActive;
 
+
     /** Soft delete. Filtered out of normal queries. */
     public boolean isDeleted;
 
+
     public Budget() {}
+
 
     public Budget(String name, double maxAmount) {
         this.name = name;
+
         this.maxAmount = maxAmount;
+
         this.createdAt = System.currentTimeMillis();
+
         this.isActive = false;
+
         this.isDeleted = false;
     }
+
 
     @Nullable
     @Override

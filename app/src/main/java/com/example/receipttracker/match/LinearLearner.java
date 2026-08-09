@@ -1,13 +1,20 @@
 package com.example.receipttracker.match;
 
+
 import androidx.annotation.NonNull;
 
+
 import com.example.receipttracker.log.Logger;
+
 import com.example.receipttracker.ocr.DetectedNumber;
 
+
 import java.util.ArrayList;
+
 import java.util.List;
+
 import java.util.Locale;
+
 
 /**
  * Stage 2 of the two-stage receipt-classifier: given a number that's
@@ -42,6 +49,7 @@ public final class LinearLearner {
 
     private LinearLearner() {}
 
+
     public static final String[] FEATURE_NAMES = {
             "hasTotalKeyword",
             "hasComponentKeyword",
@@ -56,9 +64,12 @@ public final class LinearLearner {
             "circleScore"
     };
 
+
     public static final int FEATURE_COUNT = FEATURE_NAMES.length;
 
+
     public static int featureCount() { return FEATURE_COUNT; }
+
 
     // ---------- feature extraction ----------
 
@@ -69,67 +80,87 @@ public final class LinearLearner {
                                            Double tip,
                                            int totalLines) {
         double[] f = new double[FEATURE_COUNT];
+
         String kw;
+
         if (n.keyword == null) {
             kw = "";
         } else {
             kw = n.keyword.toLowerCase();
         }
+
         boolean hasTotal = kw.equals("total") || kw.equals("amount")
                 || kw.equals("balance") || kw.equals("due");
+
         boolean hasComponent = kw.equals("subtotal") || kw.equals("tax") || kw.equals("tip");
+
         if (hasTotal) {
             f[0] = 1.0;
         } else {
             f[0] = 0.0;
         }
+
         if (hasComponent) {
             f[1] = 1.0;
         } else {
             f[1] = 0.0;
         }
 
+
         double maxOther = 0;
+
         for (DetectedNumber m : all) {
             if (m == n) continue;
+
             if (Math.abs(m.value - n.value) < 0.005) continue;
+
             if (m.value > maxOther) maxOther = m.value;
         }
+
         if (maxOther <= 0 || n.value >= maxOther) {
             f[2] = 1.0;
         } else {
             f[2] = 0.0;
         }
+
         if (totalLines > 0 && n.lineIndex >= (totalLines / 2.0)) {
             f[3] = 1.0;
         } else {
             f[3] = 0.0;
         }
+
         if (n.value != Math.floor(n.value)) {
             f[4] = 1.0;
         } else {
             f[4] = 0.0;
         }
+
         if (subtotal != null && n.value < subtotal - 0.01) {
             f[5] = 1.0;
         } else {
             f[5] = 0.0;
         }
 
+
         if (subtotal != null) {
             double taxVal;
+
             if (tax == null) {
                 taxVal = 0.0;
             } else {
                 taxVal = tax;
             }
+
             double tipVal;
+
             if (tip == null) {
                 tipVal = 0.0;
             } else {
                 tipVal = tip;
             }
+
             double predicted = subtotal + taxVal + tipVal;
+
             if (predicted > 0 && Math.abs(n.value - predicted) <= 1.00) {
                 f[6] = 1.0;
             } else {
@@ -139,98 +170,135 @@ public final class LinearLearner {
             f[6] = 0.0;
         }
 
+
         String line;
+
         if (n.line == null) {
             line = "";
         } else {
             line = n.line;
         }
+
         if (line.matches(".*\\d+[/\\-]\\d+.*")) {
             f[7] = 1.0;
         } else {
             f[7] = 0.0;
         }
+
         boolean integer = (n.value == Math.floor(n.value));
+
         if (integer && n.value >= 100 && n.value < 1_000_000) {
             f[8] = 1.0;
         } else {
             f[8] = 0.0;
         }
 
+
         // Visual signals: pass the raw 0..1 scores straight through.
         // The strong positive weight in the trained model will lift
         // emphasised numbers above non-emphasised ones even when the
         // text-based features are noisy.
         f[9]  = clamp01(n.highlightScore);
+
         f[10] = clamp01(n.circleScore);
+
 
         return f;
     }
 
+
     private static double clamp01(double v) {
         if (v < 0) return 0;
+
         if (v > 1) return 1;
+
         return v;
     }
+
 
     // ---------- trained model ----------
 
     private static final String LOG_TAG = "TotalLearner";
 
+
     private static volatile LogisticRegression.Trained model;
+
     private static volatile boolean trained = false;
+
 
     private static synchronized void trainIfNeeded() {
         if (trained) return;
+
         Logger.i(LOG_TAG, "Training on " + TRAINING_DATA.size() + " examples, "
                 + FEATURE_COUNT + " features, "
                 + HyperParamsLog(HyperParamsForTraining));
+
         model = LogisticRegression.train(LOG_TAG, FEATURE_COUNT, TRAINING_DATA, HyperParamsForTraining);
+
         trained = true;
+
         Logger.i(LOG_TAG, "Training complete");
+
         StringBuilder wlog = new StringBuilder("Learned weights:\n");
+
         for (int i = 0; i < FEATURE_COUNT; i++) {
             wlog.append(String.format(Locale.US, "  %-22s = %+.3f%n", FEATURE_NAMES[i], model.weights[i]));
         }
+
         wlog.append(String.format(Locale.US, "  %-22s = %+.3f", "bias", model.bias));
+
         Logger.i(LOG_TAG, wlog.toString());
     }
 
+
     private static final LogisticRegression.HyperParams HyperParamsForTraining =
             new LogisticRegression.HyperParams(800, 0.5, 0.01);
+
 
     private static String HyperParamsLog(LogisticRegression.HyperParams hp) {
         return String.format(Locale.US, "epochs=%d lr=%.2f l2=%.3f", hp.epochs, hp.learningRate, hp.l2Lambda);
     }
 
+
     public static double predictProbability(double[] features) {
         trainIfNeeded();
+
         return LogisticRegression.predictProbability(model, features);
     }
 
+
     public static double predictLogit(double[] features) {
         trainIfNeeded();
+
         return LogisticRegression.predictLogit(model, features);
     }
 
+
     public static double[] getWeights() {
         trainIfNeeded();
+
         return model.weights.clone();
     }
 
+
     public static double getBias() {
         trainIfNeeded();
+
         return model.bias;
     }
 
+
     public static String explain(double[] features) {
         trainIfNeeded();
+
         return LogisticRegression.explain(FEATURE_NAMES, model, features);
     }
+
 
     // ---------- training data ----------
 
     private static final List<LogisticRegression.Example> TRAINING_DATA = buildTrainingData();
+
 
     /**
      * 11 features per example. The visual-signal features are present
@@ -242,32 +310,52 @@ public final class LinearLearner {
     private static List<LogisticRegression.Example> buildTrainingData() {
         List<LogisticRegression.Example> ex = new ArrayList<>();
 
+
         // === POSITIVE (label=1): looks like a real total ===
         // hasTotal, hasComp, isLargest, inBottom, hasDec, belowSub, close, date, code, hl, cr
         ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+
         ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+
         ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+
         ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+
         ex.add(new LogisticRegression.Example(new double[]{0,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+
         ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 0, 0, 0, 0, 0}, 1.0));
+
         ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+
         // Highlighted (yellow highlighter) — the visual signal alone is enough to call it a total.
         ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.8, 0.0}, 1.0));
+
         ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.6, 0.0}, 1.0));
+
         // Circled (pen circle around a number) — same: strong positive.
         ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.0, 0.6}, 1.0));
+
         ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.0, 0.5}, 1.0));
+
 
         // === NEGATIVE (label=0): NOT a total ===
         ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 0, 0, 0, 0, 0, 0}, 0.0));
+
         ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0, 0, 0}, 0.0));
+
         ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0, 0, 0}, 0.0));
+
         ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 1, 0, 0, 0, 0, 0}, 0.0));
+
         ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 1, 0, 0, 0}, 0.0));
+
         ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 1, 0, 0}, 0.0));
+
         ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 0, 0, 0}, 0.0));
+
         // A non-emphasised subtotal is still a subtotal, not a total.
         ex.add(new LogisticRegression.Example(new double[]{0,1, 0,1, 1, 0, 0, 0, 0, 0, 0}, 0.0));
+
         return ex;
     }
 }

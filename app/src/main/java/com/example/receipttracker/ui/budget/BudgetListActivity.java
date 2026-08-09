@@ -1,37 +1,67 @@
 package com.example.receipttracker.ui.budget;
 
+
 import android.app.AlertDialog;
+
 import android.content.Intent;
+
 import android.os.Bundle;
+
 import android.view.LayoutInflater;
+
 import android.view.View;
+
 import android.view.ViewGroup;
+
 import android.widget.CheckBox;
+
 import android.widget.TextView;
+
 import android.widget.Toast;
 
+
 import androidx.annotation.NonNull;
+
 import androidx.appcompat.app.AppCompatActivity;
+
 import androidx.lifecycle.ViewModelProvider;
+
 import androidx.recyclerview.widget.LinearLayoutManager;
+
 import androidx.recyclerview.widget.RecyclerView;
 
+
 import com.example.receipttracker.R;
+
 import com.example.receipttracker.data.AppDatabase;
+
 import com.example.receipttracker.data.Budget;
+
 import com.example.receipttracker.data.BudgetDao;
+
 import com.example.receipttracker.data.Receipt;
+
 import com.example.receipttracker.data.ReceiptDao;
+
 import com.example.receipttracker.log.Logger;
+
 import com.example.receipttracker.util.AppExecutors;
+
 import com.example.receipttracker.util.MoneyUtils;
+
 import com.google.android.material.button.MaterialButton;
+
 import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton;
+
 import com.google.android.material.textfield.TextInputEditText;
 
+
 import java.util.HashMap;
+
 import java.util.List;
+
 import java.util.Map;
+
 
 /**
  * Lists all user budgets and lets the user create, open, set-active, or
@@ -41,53 +71,81 @@ public class BudgetListActivity extends AppCompatActivity {
 
     private static final String TAG = "BudgetList";
 
+
     private RecyclerView rv;
+
     private View tvEmpty;
+
     private BudgetAdapter adapter;
+
     private BudgetDao budgetDao;
+
     private ReceiptDao receiptDao;
+
     private final AppExecutors exec = AppExecutors.get();
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
         Logger.section("BUDGET LIST");
+
         Logger.i(TAG, "onCreate");
+
         setContentView(R.layout.activity_budget_list);
 
+
         rv = findViewById(R.id.rv);
+
         tvEmpty = findViewById(R.id.tv_empty);
+
         ExtendedFloatingActionButton fab = findViewById(R.id.fab_new_budget);
 
+
         budgetDao = AppDatabase.get(this).budgetDao();
+
         receiptDao = AppDatabase.get(this).receiptDao();
 
+
         rv.setLayoutManager(new LinearLayoutManager(this));
+
         adapter = new BudgetAdapter();
+
         rv.setAdapter(adapter);
 
+
         budgetDao.getAllActiveLive().observe(this, this::render);
+
         // Observe receipt changes so spent totals stay in sync.
         receiptDao.getAllActiveLive().observe(this, list -> adapter.notifyAllBudgetsChanged());
+
 
         fab.setOnClickListener(v -> showCreateDialog(null));
     }
 
+
     private void render(List<Budget> budgets) {
         int budgetCount;
+
         if (budgets == null) {
             budgetCount = 0;
         } else {
             budgetCount = budgets.size();
         }
+
         Logger.i(TAG, "render: " + budgetCount + " budgets");
+
         adapter.set(budgets);
+
         boolean empty = budgets == null || budgets.isEmpty();
+
         if (empty) {
             rv.setVisibility(View.GONE);
         } else {
             rv.setVisibility(View.VISIBLE);
         }
+
         if (empty) {
             tvEmpty.setVisibility(View.VISIBLE);
         } else {
@@ -95,82 +153,118 @@ public class BudgetListActivity extends AppCompatActivity {
         }
     }
 
+
     private void showCreateDialog(Budget edit) {
         boolean isEdit = edit != null;
+
         View view = LayoutInflater.from(this).inflate(R.layout.dialog_create_budget, null, false);
+
         TextInputEditText etName = view.findViewById(R.id.et_name);
+
         TextInputEditText etMax = view.findViewById(R.id.et_max);
+
         CheckBox cbActive = view.findViewById(R.id.cb_set_active);
+
         if (isEdit) {
             etName.setText(edit.name);
+
             etMax.setText(String.valueOf(edit.maxAmount));
+
             cbActive.setChecked(edit.isActive);
         }
+
         String title;
+
         if (isEdit) {
             title = "Edit budget";
         } else {
             title = "New budget";
         }
+
         String positiveLabel;
+
         if (isEdit) {
             positiveLabel = "Save";
         } else {
             positiveLabel = "Create";
         }
+
         AlertDialog.Builder b = new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setView(view)
                 .setNegativeButton(android.R.string.cancel, null)
                 .setPositiveButton(positiveLabel, (d, w) -> {
                     String name;
+
                     if (etName.getText() == null) {
                         name = "";
                     } else {
                         name = etName.getText().toString().trim();
                     }
+
                     String maxStr;
+
                     if (etMax.getText() == null) {
                         maxStr = "";
                     } else {
                         maxStr = etMax.getText().toString().trim();
                     }
+
                     if (name.isEmpty() || maxStr.isEmpty()) {
                         Toast.makeText(this, "Name and max are required", Toast.LENGTH_SHORT).show();
+
                         return;
                     }
+
                     double max;
+
                     try { max = Double.parseDouble(maxStr); }
                     catch (NumberFormatException e) { Toast.makeText(this, "Invalid amount", Toast.LENGTH_SHORT).show(); return; }
+
                     if (max <= 0) { Toast.makeText(this, "Max must be positive", Toast.LENGTH_SHORT).show(); return; }
+
                     final double maxFinal = max;
+
                     final String nameFinal = name;
+
                     final boolean wantActive = cbActive.isChecked();
+
                     exec.diskIO().execute(() -> {
                         if (isEdit) {
                             edit.name = nameFinal;
+
                             edit.maxAmount = maxFinal;
+
                             budgetDao.update(edit);
+
                             if (wantActive && !edit.isActive) {
                                 budgetDao.setActive(edit.id);
                             } else if (!wantActive && edit.isActive) {
                                 budgetDao.clearAllActive();
                             }
+
                             Logger.i(TAG, "Updated budget id=" + edit.id);
                         } else {
                             Budget nb = new Budget(nameFinal, maxFinal);
+
                             long newId = budgetDao.insert(nb);
+
                             if (wantActive) {
                                 budgetDao.setActive(newId);
+
                                 nb.id = newId;
+
                                 nb.isActive = true;
                             }
+
                             Logger.i(TAG, "Created budget id=" + newId);
                         }
                     });
                 });
+
         b.show();
     }
+
 
     private void showDeleteDialog(Budget b) {
         new AlertDialog.Builder(this)
@@ -180,22 +274,27 @@ public class BudgetListActivity extends AppCompatActivity {
                 .setPositiveButton("Delete", (d, w) -> {
                     exec.diskIO().execute(() -> {
                         receiptDao.clearBudgetOnReceipts(b.id);
+
                         budgetDao.softDelete(b.id);
+
                         Logger.i(TAG, "Soft-deleted budget id=" + b.id);
                     });
                 })
                 .show();
     }
 
+
     // ============ adapter ============
 
     class BudgetAdapter extends RecyclerView.Adapter<BudgetAdapter.VH> {
         private List<Budget> data = java.util.Collections.emptyList();
+
         // We can't bind per-row spent in onBindViewHolder because the LiveData
         // is observed at the activity level, not per row. We recompute spent
         // by querying sumSpent on the disk executor every time receipts change
         // and post results back through a simple map.
         private final Map<Long, Double> spentByBudget = new HashMap<>();
+
 
         void set(List<Budget> d) {
             if (d == null) {
@@ -203,68 +302,94 @@ public class BudgetListActivity extends AppCompatActivity {
             } else {
                 this.data = d;
             }
+
             notifyDataSetChanged();
+
             refreshSpent();
         }
+
 
         void notifyAllBudgetsChanged() {
             refreshSpent();
         }
 
+
         private void refreshSpent() {
             exec.diskIO().execute(() -> {
                 Map<Long, Double> next = new HashMap<>();
+
                 for (Budget b : data) {
                     next.put(b.id, budgetDao.sumSpent(b.id));
                 }
+
                 runOnUiThread(() -> {
                     spentByBudget.clear();
+
                     spentByBudget.putAll(next);
+
                     notifyDataSetChanged();
                 });
             });
         }
 
+
         @NonNull @Override
         public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
             View v = LayoutInflater.from(parent.getContext())
                     .inflate(R.layout.item_budget, parent, false);
+
             return new VH(v);
         }
+
 
         @Override
         public void onBindViewHolder(@NonNull VH h, int position) {
             Budget b = data.get(position);
+
             h.name.setText(b.name);
+
             double spent = spentByBudget.getOrDefault(b.id, 0.0);
+
             h.amounts.setText(String.format("%s / %s",
                     MoneyUtils.format(spent), MoneyUtils.format(b.maxAmount)));
+
             int pct;
+
             if (b.maxAmount > 0) {
                 pct = (int) Math.min(100, Math.round(spent * 100.0 / b.maxAmount));
             } else {
                 pct = 0;
             }
+
             h.progress.setProgress(pct);
+
             h.status.setText(pct + "% used");
+
             if (b.isActive) {
                 h.activeChip.setVisibility(View.VISIBLE);
             } else {
                 h.activeChip.setVisibility(View.GONE);
             }
+
             h.itemView.setOnClickListener(v -> {
                 Intent i = new Intent(BudgetListActivity.this, BudgetDetailActivity.class);
+
                 i.putExtra(BudgetDetailActivity.EXTRA_BUDGET_ID, b.id);
+
                 startActivity(i);
             });
+
             h.itemView.setOnLongClickListener(v -> {
                 String firstOpt;
+
                 if (b.isActive) {
                     firstOpt = "Deactivate";
                 } else {
                     firstOpt = "Set as active";
                 }
+
                 String[] opts = {firstOpt, "Edit", "Delete"};
+
                 new AlertDialog.Builder(BudgetListActivity.this)
                         .setTitle(b.name)
                         .setItems(opts, (d, w) -> {
@@ -280,23 +405,35 @@ public class BudgetListActivity extends AppCompatActivity {
                             }
                         })
                         .show();
+
                 return true;
             });
         }
 
+
         @Override public int getItemCount() { return data.size(); }
+
 
         class VH extends RecyclerView.ViewHolder {
             final TextView name, subtitle, amounts, status, activeChip;
+
             final android.widget.ProgressBar progress;
+
             VH(View v) {
                 super(v);
+
                 name = v.findViewById(R.id.tv_name);
+
                 subtitle = v.findViewById(R.id.tv_subtitle);
+
                 amounts = v.findViewById(R.id.tv_amounts);
+
                 status = v.findViewById(R.id.tv_status);
+
                 activeChip = v.findViewById(R.id.tv_active_chip);
+
                 progress = v.findViewById(R.id.pb_budget);
+
                 subtitle.setText("Tap to view · long-press for options");
             }
         }

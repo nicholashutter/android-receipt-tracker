@@ -1,6 +1,8 @@
 package com.example.receipttracker.ocr;
 
+
 import androidx.annotation.Nullable;
+
 
 /**
  * One parsed receipt, populated by {@link ReceiptParser#parse(String)}.
@@ -13,8 +15,12 @@ import androidx.annotation.Nullable;
  */
 public final class ParsedReceipt {
     @Nullable public String merchant;
+
     @Nullable public Long dateMillis;
+
     @Nullable public Double amount;
+
     @Nullable public String rawText;
+
     @Nullable public MerchantClassifier.Prediction merchantPrediction;
 }

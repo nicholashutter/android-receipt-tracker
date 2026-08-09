@@ -1,8 +1,12 @@
 # Changelog
 
-All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project does not yet use semantic versioning.
+All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/) as of v1.0.0.
 
-## [Unreleased] — 2026-08-07
+## [Unreleased]
+
+## [1.0.0] — 2026-08-09
+
+First tagged release. Pre-alpha — flagged as a pre-release on GitHub.
 
 ### Added
 - **Visual signal detection.** `VisualSignalDetector` reads the

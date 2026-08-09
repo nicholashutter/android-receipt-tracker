@@ -128,7 +128,11 @@ public final class TotalVerifier {
             this.ensembleVotesForWinner = ensembleVotesForWinner;
             this.ensembleSize = ensembleSize;
             this.ensembleConfidence = ensembleConfidence;
-            this.ensembleSummary = ensembleSummary == null ? "" : ensembleSummary;
+            if (ensembleSummary == null) {
+                this.ensembleSummary = "";
+            } else {
+                this.ensembleSummary = ensembleSummary;
+            }
         }
     }
 
@@ -153,9 +157,21 @@ public final class TotalVerifier {
     public static Result verify(double candidate, List<DetectedNumber> allNumbers,
                                  double enteredAmount) {
         Logger.section("TOTAL VERIFY");
+        String enteredLabel;
+        if (Double.isNaN(enteredAmount)) {
+            enteredLabel = "(none)";
+        } else {
+            enteredLabel = fmt(enteredAmount);
+        }
+        int allNumbersCount;
+        if (allNumbers == null) {
+            allNumbersCount = 0;
+        } else {
+            allNumbersCount = allNumbers.size();
+        }
         Logger.i("Verifier", "candidate(circled)=" + candidate
-                + "  entered=" + (Double.isNaN(enteredAmount) ? "(none)" : fmt(enteredAmount))
-                + "  (all numbers: " + (allNumbers == null ? 0 : allNumbers.size()) + ")");
+                + "  entered=" + enteredLabel
+                + "  (all numbers: " + allNumbersCount + ")");
 
         // ============ STAGE 1: PriceClassifier ============
         Logger.section("STAGE 1: PRICE CLASSIFIER");
@@ -171,9 +187,15 @@ public final class TotalVerifier {
             double[] f = PriceClassifier.extractFeatures(n);
             double p = PriceClassifier.predictProbability(f);
             boolean keep = p >= PriceClassifier.PRICE_THRESHOLD;
+            String keepLabel;
+            if (keep) {
+                keepLabel = "[PRICE]";
+            } else {
+                keepLabel = "[drop]";
+            }
             Logger.i("PriceClf", String.format(Locale.US,
                     "  $%.2f (line %d, kw=%s)  P(isPrice)=%.3f  %s",
-                    n.value, n.lineIndex, n.keyword, p, keep ? "[PRICE]" : "[drop]"));
+                    n.value, n.lineIndex, n.keyword, p, keepLabel));
             if (keep) prices.add(n);
         }
         Logger.i("PriceClf", "kept " + prices.size() + " of " + allNumbers.size() + " numbers as prices");
@@ -281,9 +303,15 @@ public final class TotalVerifier {
         // ============ Cross-check: entered vs circled ============
         boolean enteredMatchesMarked = haveEntered
                 && Math.abs(enteredAmount - candidate) <= TOL_STRICT;
+        String enteredDisplay;
+        if (haveEntered) {
+            enteredDisplay = fmt(enteredAmount);
+        } else {
+            enteredDisplay = "(none)";
+        }
         Logger.i("Verifier", String.format(Locale.US,
                 "cross-check: entered=%s  circled=%s  match=%s",
-                haveEntered ? fmt(enteredAmount) : "(none)",
+                enteredDisplay,
                 fmt(candidate),
                 enteredMatchesMarked));
 
@@ -409,9 +437,11 @@ public final class TotalVerifier {
         }
         reason.append("Cross-check:\n");
         if (haveEntered) {
-            reason.append(enteredMatchesMarked
-                    ? "  OK entered and circled agree to within " + fmt(TOL_STRICT) + "\n"
-                    : "  WARN entered and circled differ — sanity check decides\n");
+            if (enteredMatchesMarked) {
+                reason.append("  OK entered and circled agree to within " + fmt(TOL_STRICT) + "\n");
+            } else {
+                reason.append("  WARN entered and circled differ — sanity check decides\n");
+            }
         } else {
             reason.append("  (no entered value provided)\n");
         }
@@ -426,12 +456,30 @@ public final class TotalVerifier {
         Logger.i("Verifier", "reason: " + reason);
         Logger.section("TOTAL VERIFY END");
 
+        double modelChoice;
+        if (bestAltRecord != null && bestAltProb > candProb) {
+            modelChoice = bestAltVal;
+        } else {
+            modelChoice = candidate;
+        }
+        double enteredAmountOut;
+        double enteredPriceProbOut;
+        double enteredProbOut;
+        if (haveEntered) {
+            enteredAmountOut = enteredAmount;
+            enteredPriceProbOut = enteredPriceProb;
+            enteredProbOut = enteredProb;
+        } else {
+            enteredAmountOut = Double.NaN;
+            enteredPriceProbOut = Double.NaN;
+            enteredProbOut = Double.NaN;
+        }
         return new Result(recommendedTotal, combined, reason.toString(), adjusted,
                 candPriceProb, candProb, bestAltProb,
-                bestAltRecord != null && bestAltProb > candProb ? bestAltVal : candidate,
-                haveEntered ? enteredAmount : Double.NaN,
-                haveEntered ? enteredPriceProb : Double.NaN,
-                haveEntered ? enteredProb     : Double.NaN,
+                modelChoice,
+                enteredAmountOut,
+                enteredPriceProbOut,
+                enteredProbOut,
                 enteredMatchesMarked,
                 sanityCheck,
                 recommendedTotal,

@@ -71,7 +71,13 @@ public class ExportActivity extends AppCompatActivity {
             return;
         }
         DocumentFile tree = DocumentFile.fromTreeUri(this, treeUri);
-        tvFolder.setText(tree == null ? treeUri.toString() : tree.getName());
+        String folderName;
+        if (tree == null) {
+            folderName = treeUri.toString();
+        } else {
+            folderName = tree.getName();
+        }
+        tvFolder.setText(folderName);
         btnExport.setEnabled(true);
     }
 
@@ -138,7 +144,13 @@ public class ExportActivity extends AppCompatActivity {
                 } else {
                     try {
                         ReceiptExporter.export(ExportActivity.this, tree, r);
-                        msg[0] = "Exported: " + (r.merchant == null ? "receipt" : r.merchant);
+                        String merchantLabel;
+                        if (r.merchant == null) {
+                            merchantLabel = "receipt";
+                        } else {
+                            merchantLabel = r.merchant;
+                        }
+                        msg[0] = "Exported: " + merchantLabel;
                         Logger.i("Export", "exportNewest: wrote receipt id=" + r.id);
                     } catch (Exception e) {
                         msg[0] = "Failed: " + e.getMessage();

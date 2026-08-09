@@ -65,7 +65,12 @@ public class LogsActivity extends AppCompatActivity {
             String full = Logger.readAll();
             // Show last ~16 KB so very long sessions don't kill the TextView.
             int from = Math.max(0, full.length() - 16 * 1024);
-            String body = from == 0 ? full : "...[truncated]...\n" + full.substring(from);
+            String body;
+            if (from == 0) {
+                body = full;
+            } else {
+                body = "...[truncated]...\n" + full.substring(from);
+            }
             tvLog.setText(body);
         } catch (Exception e) {
             tvLog.setText("(failed to read log: " + e.getMessage() + ")");

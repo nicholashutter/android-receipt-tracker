@@ -68,15 +68,24 @@ public final class ReceiptParser {
         Logger.i("Parser", "Parsing " + lines.length + " lines, " + rawText.length() + " chars");
 
         out.merchant = guessMerchant(lines);
-        out.merchantPrediction = (out.merchant == null) ? null
-                : MerchantClassifier.predict(out.merchant);
+        if (out.merchant == null) {
+            out.merchantPrediction = null;
+        } else {
+            out.merchantPrediction = MerchantClassifier.predict(out.merchant);
+        }
         out.dateMillis = guessDate(rawText);
         out.amount = guessAmount(lines);
         out.rawText = rawText;
 
         long ms = System.currentTimeMillis() - t0;
+        String predDisplay;
+        if (out.merchantPrediction == null) {
+            predDisplay = "(none)";
+        } else {
+            predDisplay = out.merchantPrediction.name;
+        }
         Logger.i("Parser", "Result: merchant='" + out.merchant
-                + "', merchantPred=" + (out.merchantPrediction == null ? "(none)" : out.merchantPrediction.name)
+                + "', merchantPred=" + predDisplay
                 + ", dateMillis=" + out.dateMillis
                 + ", amount=" + out.amount + "  (" + ms + "ms)");
         return out;
@@ -228,7 +237,10 @@ public final class ReceiptParser {
     }
 
     private static int normaliseYear(int y) {
-        return y < 100 ? 2000 + y : y;
+        if (y < 100) {
+            return 2000 + y;
+        }
+        return y;
     }
 
     private static long toMidnightMillis(int y, int m, int d) {
@@ -357,7 +369,12 @@ public final class ReceiptParser {
             String line = lines[i].trim();
             // Same-line keyword wins over adjacent propagation.
             String own = detectVerifierKeyword(line);
-            String keyword = (own != null) ? own : lineKeywords[i];
+            String keyword;
+            if (own != null) {
+                keyword = own;
+            } else {
+                keyword = lineKeywords[i];
+            }
             List<String> nums = extractNumbers(line);
             for (String n : nums) {
                 try {
@@ -432,7 +449,11 @@ public final class ReceiptParser {
         boolean[] hasNumber = new boolean[n];
         for (int i = 0; i < n; i++) {
             String t = ocrLines.get(i).text;
-            lineTexts[i] = t == null ? "" : t;
+            if (t == null) {
+                lineTexts[i] = "";
+            } else {
+                lineTexts[i] = t;
+            }
             hasNumber[i] = !extractNumbers(lineTexts[i].trim()).isEmpty();
         }
         // Same keyword-propagation as the text-only pass.
@@ -451,15 +472,25 @@ public final class ReceiptParser {
             if (!hasNumber[i]) continue;
             String line = lineTexts[i].trim();
             String own = detectVerifierKeyword(line);
-            String keyword = (own != null) ? own : lineKeywords[i];
+            String keyword;
+            if (own != null) {
+                keyword = own;
+            } else {
+                keyword = lineKeywords[i];
+            }
             ReceiptOcr.OcrLine ocrLine = ocrLines.get(i);
 
             // Try element-level first.
             boolean usedElement = false;
             if (ocrLine.elements != null) {
                 for (ReceiptOcr.OcrElement el : ocrLine.elements) {
-                    java.util.List<String> nums = extractNumbers(
-                            el.text == null ? "" : el.text.trim());
+                    String elText;
+                    if (el.text == null) {
+                        elText = "";
+                    } else {
+                        elText = el.text.trim();
+                    }
+                    java.util.List<String> nums = extractNumbers(elText);
                     for (String num : nums) {
                         try {
                             double v = Double.parseDouble(num);

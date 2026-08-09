@@ -58,8 +58,20 @@ public class AddTransactionActivity extends AppCompatActivity {
         }
 
         btnSave.setOnClickListener(v -> {
-            Logger.i("AddTx", "btn_save clicked: desc='" + (etDescription.getText() == null ? "" : etDescription.getText())
-                    + "' amount='" + (etAmount.getText() == null ? "" : etAmount.getText()) + "'");
+            String descText;
+            if (etDescription.getText() == null) {
+                descText = "";
+            } else {
+                descText = etDescription.getText().toString();
+            }
+            String amountText;
+            if (etAmount.getText() == null) {
+                amountText = "";
+            } else {
+                amountText = etAmount.getText().toString();
+            }
+            Logger.i("AddTx", "btn_save clicked: desc='" + descText
+                    + "' amount='" + amountText + "'");
             save();
         });
         btnCancel.setOnClickListener(v -> {
@@ -77,7 +89,13 @@ public class AddTransactionActivity extends AppCompatActivity {
                 if (t == null) { finish(); return; }
                 etDescription.setText(t.description);
                 etAmount.setText(String.valueOf(t.amount));
-                etAccount.setText(t.account == null ? "" : t.account);
+                String accountText;
+                if (t.account == null) {
+                    accountText = "";
+                } else {
+                    accountText = t.account;
+                }
+                etAccount.setText(accountText);
                 dateMillis = t.dateMillis;
                 renderDate();
             });
@@ -126,11 +144,19 @@ public class AddTransactionActivity extends AppCompatActivity {
     private void save() {
         if (!validate()) return;
         final BankTransaction t = new BankTransaction();
-        t.id = existingId >= 0 ? existingId : 0;
+        if (existingId >= 0) {
+            t.id = existingId;
+        } else {
+            t.id = 0;
+        }
         t.description = etDescription.getText().toString().trim();
         t.amount = parseAmount();
         t.dateMillis = dateMillis;
-        t.account = etAccount.getText() == null ? null : etAccount.getText().toString().trim();
+        if (etAccount.getText() == null) {
+            t.account = null;
+        } else {
+            t.account = etAccount.getText().toString().trim();
+        }
         t.createdAt = System.currentTimeMillis();
         Logger.i("AddTx", "save: id=" + t.id + " desc='" + t.description + "' amount=" + t.amount
                 + " dateMillis=" + t.dateMillis + " account='" + t.account + "'");

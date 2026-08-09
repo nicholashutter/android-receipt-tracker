@@ -69,12 +69,25 @@ public final class LinearLearner {
                                            Double tip,
                                            int totalLines) {
         double[] f = new double[FEATURE_COUNT];
-        String kw = n.keyword == null ? "" : n.keyword.toLowerCase();
+        String kw;
+        if (n.keyword == null) {
+            kw = "";
+        } else {
+            kw = n.keyword.toLowerCase();
+        }
         boolean hasTotal = kw.equals("total") || kw.equals("amount")
                 || kw.equals("balance") || kw.equals("due");
         boolean hasComponent = kw.equals("subtotal") || kw.equals("tax") || kw.equals("tip");
-        f[0] = hasTotal ? 1.0 : 0.0;
-        f[1] = hasComponent ? 1.0 : 0.0;
+        if (hasTotal) {
+            f[0] = 1.0;
+        } else {
+            f[0] = 0.0;
+        }
+        if (hasComponent) {
+            f[1] = 1.0;
+        } else {
+            f[1] = 0.0;
+        }
 
         double maxOther = 0;
         for (DetectedNumber m : all) {
@@ -82,22 +95,67 @@ public final class LinearLearner {
             if (Math.abs(m.value - n.value) < 0.005) continue;
             if (m.value > maxOther) maxOther = m.value;
         }
-        f[2] = (maxOther <= 0 || n.value >= maxOther) ? 1.0 : 0.0;
-        f[3] = (totalLines > 0 && n.lineIndex >= (totalLines / 2.0)) ? 1.0 : 0.0;
-        f[4] = (n.value != Math.floor(n.value)) ? 1.0 : 0.0;
-        f[5] = (subtotal != null && n.value < subtotal - 0.01) ? 1.0 : 0.0;
+        if (maxOther <= 0 || n.value >= maxOther) {
+            f[2] = 1.0;
+        } else {
+            f[2] = 0.0;
+        }
+        if (totalLines > 0 && n.lineIndex >= (totalLines / 2.0)) {
+            f[3] = 1.0;
+        } else {
+            f[3] = 0.0;
+        }
+        if (n.value != Math.floor(n.value)) {
+            f[4] = 1.0;
+        } else {
+            f[4] = 0.0;
+        }
+        if (subtotal != null && n.value < subtotal - 0.01) {
+            f[5] = 1.0;
+        } else {
+            f[5] = 0.0;
+        }
 
         if (subtotal != null) {
-            double predicted = subtotal + (tax == null ? 0.0 : tax) + (tip == null ? 0.0 : tip);
-            f[6] = (predicted > 0 && Math.abs(n.value - predicted) <= 1.00) ? 1.0 : 0.0;
+            double taxVal;
+            if (tax == null) {
+                taxVal = 0.0;
+            } else {
+                taxVal = tax;
+            }
+            double tipVal;
+            if (tip == null) {
+                tipVal = 0.0;
+            } else {
+                tipVal = tip;
+            }
+            double predicted = subtotal + taxVal + tipVal;
+            if (predicted > 0 && Math.abs(n.value - predicted) <= 1.00) {
+                f[6] = 1.0;
+            } else {
+                f[6] = 0.0;
+            }
         } else {
             f[6] = 0.0;
         }
 
-        String line = n.line == null ? "" : n.line;
-        f[7] = line.matches(".*\\d+[/\\-]\\d+.*") ? 1.0 : 0.0;
+        String line;
+        if (n.line == null) {
+            line = "";
+        } else {
+            line = n.line;
+        }
+        if (line.matches(".*\\d+[/\\-]\\d+.*")) {
+            f[7] = 1.0;
+        } else {
+            f[7] = 0.0;
+        }
         boolean integer = (n.value == Math.floor(n.value));
-        f[8] = (integer && n.value >= 100 && n.value < 1_000_000) ? 1.0 : 0.0;
+        if (integer && n.value >= 100 && n.value < 1_000_000) {
+            f[8] = 1.0;
+        } else {
+            f[8] = 0.0;
+        }
 
         // Visual signals: pass the raw 0..1 scores straight through.
         // The strong positive weight in the trained model will lift

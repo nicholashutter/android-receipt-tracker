@@ -119,12 +119,22 @@ public class MainActivity extends AppCompatActivity {
 
         // LiveData wiring.
         receiptDao.countActiveLive().observe(this, n -> {
-            int count = n == null ? 0 : n;
+            int count;
+            if (n == null) {
+                count = 0;
+            } else {
+                count = n;
+            }
             Logger.d("Main", "receipts countActiveLive -> " + count);
             tvReceiptCount.setText(Integer.toString(count));
         });
         db.bankTransactionDao().countLive().observe(this, count -> {
-            int n = count == null ? 0 : count;
+            int n;
+            if (count == null) {
+                n = 0;
+            } else {
+                n = count;
+            }
             Logger.d("Main", "transactions countLive -> " + n);
             tvTxCount.setText(Integer.toString(n));
         });
@@ -145,12 +155,20 @@ public class MainActivity extends AppCompatActivity {
         tvActiveBudgetName.setText(active.name);
         // Live observed query for the spent amount.
         budgetDao.sumSpentLive(active.id).observe(this, spent -> {
-            double s = spent == null ? 0 : spent;
+            double s;
+            if (spent == null) {
+                s = 0;
+            } else {
+                s = spent;
+            }
             tvActiveBudgetAmount.setText(String.format("%s / %s",
                     MoneyUtils.format(s), MoneyUtils.format(active.maxAmount)));
-            int pct = active.maxAmount > 0
-                    ? (int) Math.min(100, Math.round(s * 100.0 / active.maxAmount))
-                    : 0;
+            int pct;
+            if (active.maxAmount > 0) {
+                pct = (int) Math.min(100, Math.round(s * 100.0 / active.maxAmount));
+            } else {
+                pct = 0;
+            }
             pbActiveBudget.setProgress(pct);
         });
     }

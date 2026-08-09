@@ -103,9 +103,12 @@ public class EditReceiptActivity extends AppCompatActivity {
                 // form (e.g. "WHOLE FOODS" -> "Whole Foods Market").
                 // Otherwise keep the OCR string.
                 MerchantClassifier.Prediction pred = MerchantClassifier.predict(merchant);
-                String refined = (pred != null && pred.confidence >= 0.40)
-                        ? pred.name
-                        : merchant;
+                String refined;
+                if (pred != null && pred.confidence >= 0.40) {
+                    refined = pred.name;
+                } else {
+                    refined = merchant;
+                }
                 etMerchant.setText(refined);
                 if (pred != null) {
                     Logger.i("Edit", "merchant refined: '" + merchant
@@ -122,7 +125,11 @@ public class EditReceiptActivity extends AppCompatActivity {
         etDate.setOnClickListener(v -> showDatePicker());
         tvRawText.setOnClickListener(v -> {
             showingRaw = !showingRaw;
-            tvRawText.setVisibility(showingRaw ? View.VISIBLE : View.GONE);
+            if (showingRaw) {
+                tvRawText.setVisibility(View.VISIBLE);
+            } else {
+                tvRawText.setVisibility(View.GONE);
+            }
         });
         if (rawText != null && !rawText.isEmpty()) {
             tvRawText.setText(rawText);
@@ -158,9 +165,27 @@ public class EditReceiptActivity extends AppCompatActivity {
                 Receipt r = AppDatabase.get(EditReceiptActivity.this).receiptDao().getById(id);
                 exec.mainThread().execute(() -> {
                     if (r == null) { finish(); return; }
-                    etMerchant.setText(r.merchant == null ? "" : r.merchant);
-                    etAmount.setText(r.amount > 0 ? String.valueOf(r.amount) : "");
-                    etNotes.setText(r.notes == null ? "" : r.notes);
+                    String merchantText;
+                    if (r.merchant == null) {
+                        merchantText = "";
+                    } else {
+                        merchantText = r.merchant;
+                    }
+                    etMerchant.setText(merchantText);
+                    String amountText;
+                    if (r.amount > 0) {
+                        amountText = String.valueOf(r.amount);
+                    } else {
+                        amountText = "";
+                    }
+                    etAmount.setText(amountText);
+                    String notesText;
+                    if (r.notes == null) {
+                        notesText = "";
+                    } else {
+                        notesText = r.notes;
+                    }
+                    etNotes.setText(notesText);
                     dateMillis = r.dateMillis;
                     photoPath = r.photoPath;
                     rawText = r.rawText;
@@ -378,7 +403,12 @@ public class EditReceiptActivity extends AppCompatActivity {
         String[] labels = new String[cachedNumbers.size()];
         for (int i = 0; i < cachedNumbers.size(); i++) {
             DetectedNumber n = cachedNumbers.get(i);
-            String kw = n.keyword == null ? "" : "  •  " + n.keyword.toUpperCase();
+            String kw;
+            if (n.keyword == null) {
+                kw = "";
+            } else {
+                kw = "  •  " + n.keyword.toUpperCase();
+            }
             labels[i] = String.format(Locale.US, "$%.2f%s   [line %d]  %s",
                     n.value, kw, n.lineIndex, trim(n.line, 60));
         }
@@ -449,14 +479,18 @@ public class EditReceiptActivity extends AppCompatActivity {
         if (entered > 0) {
             body.append(String.format(Locale.US, "  P(entered is a price):  %.2f%n", r.enteredPriceProbability));
             body.append(String.format(Locale.US, "  P(entered is the total): %.2f%n", r.enteredProbability));
-            body.append(r.enteredMatchesMarked
-                    ? "  Cross-check: entered and circled agree (within $0.10)\n"
-                    : "  Cross-check: entered and circled differ\n");
+            if (r.enteredMatchesMarked) {
+                body.append("  Cross-check: entered and circled agree (within $0.10)\n");
+            } else {
+                body.append("  Cross-check: entered and circled differ\n");
+            }
         }
         body.append(String.format(Locale.US, "  Sanity: %s%n", r.sanityCheck));
-        body.append(String.format(Locale.US, "  %s%n%n", r.wasAdjusted
-                ? "(adjusted from marked value)"
-                : "(kept marked value)"));
+        if (r.wasAdjusted) {
+            body.append(String.format(Locale.US, "  (adjusted from marked value)%n%n"));
+        } else {
+            body.append(String.format(Locale.US, "  (kept marked value)%n%n"));
+        }
         body.append(r.reasoning);
         tvVerifier.setText(body.toString());
         tvVerifier.setVisibility(View.VISIBLE);
@@ -558,10 +592,16 @@ public class EditReceiptActivity extends AppCompatActivity {
 
     private void showBudgetPrompt(Budget active) {
         double total = parseAmount();
+        double pct;
+        if (active.maxAmount > 0) {
+            pct = Math.min(100, total * 100.0 / active.maxAmount);
+        } else {
+            pct = 0;
+        }
         String msg = String.format(Locale.US,
                 "Add $%.2f to '%s' budget? (%.0f%% used, %s cap)",
                 total, active.name,
-                active.maxAmount > 0 ? Math.min(100, total * 100.0 / active.maxAmount) : 0,
+                pct,
                 MoneyUtils.format(active.maxAmount));
         new AlertDialog.Builder(this)
                 .setTitle("Add to budget")
@@ -615,20 +655,34 @@ public class EditReceiptActivity extends AppCompatActivity {
 
     private void saveReceiptInternal() {
         final Receipt r = new Receipt();
-        r.id = existingId >= 0 ? existingId : 0;
+        if (existingId >= 0) {
+            r.id = existingId;
+        } else {
+            r.id = 0;
+        }
         r.merchant = etMerchant.getText().toString().trim();
         r.amount = parseAmount();
         r.dateMillis = dateMillis;
-        r.notes = etNotes.getText() == null ? null : etNotes.getText().toString().trim();
+        if (etNotes.getText() == null) {
+            r.notes = null;
+        } else {
+            r.notes = etNotes.getText().toString().trim();
+        }
         r.photoPath = photoPath;
         r.rawText = rawText;
         r.createdAt = System.currentTimeMillis();
         // Link to the budget the user picked in the prompt. Only set on insert;
         // updates preserve the existing budgetId.
         final Long budgetIdToSet = pendingBudgetId;
+        String photoPathLog;
+        if (r.photoPath == null) {
+            photoPathLog = "null";
+        } else {
+            photoPathLog = r.photoPath;
+        }
         Logger.i("Edit", "saveReceiptInternal: id=" + r.id + " merchant='" + r.merchant
                 + "' amount=" + r.amount + " dateMillis=" + r.dateMillis
-                + " photoPath=" + (r.photoPath == null ? "null" : r.photoPath)
+                + " photoPath=" + photoPathLog
                 + " budgetId=" + budgetIdToSet);
 
         exec.diskIO().execute(() -> {
@@ -640,22 +694,30 @@ public class EditReceiptActivity extends AppCompatActivity {
                 if (existing != null) {
                     r.matchGroupId = existing.matchGroupId;
                     r.createdAt = existing.createdAt;
-                    if (budgetIdToSet != null) r.budgetId = budgetIdToSet;
-                    else r.budgetId = existing.budgetId;
+                    if (budgetIdToSet != null) {
+                        r.budgetId = budgetIdToSet;
+                    } else {
+                        r.budgetId = existing.budgetId;
+                    }
                 }
                 dao.update(r);
                 rowId = r.id;
                 Logger.i("Edit", "Updated receipt id=" + r.id);
             } else {
-                if (budgetIdToSet != null) r.budgetId = budgetIdToSet;
+                if (budgetIdToSet != null) {
+                    r.budgetId = budgetIdToSet;
+                }
                 rowId = dao.insert(r);
                 Logger.i("Edit", "Inserted receipt id=" + rowId + " budgetId=" + budgetIdToSet);
             }
             exec.mainThread().execute(() -> {
                 String saved = getString(R.string.saved);
-                String msg = budgetIdToSet != null
-                        ? saved + " · added to budget"
-                        : saved;
+                String msg;
+                if (budgetIdToSet != null) {
+                    msg = saved + " · added to budget";
+                } else {
+                    msg = saved;
+                }
                 Toast.makeText(EditReceiptActivity.this, msg, Toast.LENGTH_SHORT).show();
                 finish();
             });
@@ -665,7 +727,10 @@ public class EditReceiptActivity extends AppCompatActivity {
     private static String trim(String s, int max) {
         if (s == null) return "";
         s = s.trim();
-        return s.length() <= max ? s : s.substring(0, max - 1) + "…";
+        if (s.length() <= max) {
+            return s;
+        }
+        return s.substring(0, max - 1) + "…";
     }
 
     /**

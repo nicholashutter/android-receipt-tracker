@@ -82,13 +82,26 @@ public final class PriceClassifier {
         double v = n.value;
 
         // hasDecimal: 5.99 yes, 6 no.
-        f[0] = (v != Math.floor(v)) ? 1.0 : 0.0;
+        if (v != Math.floor(v)) {
+            f[0] = 1.0;
+        } else {
+            f[0] = 0.0;
+        }
 
         // valueInRange: 1.00 < v < 1000.0 — most single-item prices live here.
         // Below 1 → typically a quantity or fraction; above 1000 → usually a code or year.
-        f[1] = (v > 1.0 && v < 1000.0) ? 1.0 : 0.0;
+        if (v > 1.0 && v < 1000.0) {
+            f[1] = 1.0;
+        } else {
+            f[1] = 0.0;
+        }
 
-        String line = n.line == null ? "" : n.line;
+        String line;
+        if (n.line == null) {
+            line = "";
+        } else {
+            line = n.line;
+        }
         String lower = line.toLowerCase();
 
         // hasLetters: 3+ alphabetic characters on the line. Real line items say "Bananas 1.99".
@@ -97,30 +110,62 @@ public final class PriceClassifier {
             if (Character.isLetter(line.charAt(i))) letterCount++;
             if (letterCount >= 3) break;
         }
-        f[2] = (letterCount >= 3) ? 1.0 : 0.0;
+        if (letterCount >= 3) {
+            f[2] = 1.0;
+        } else {
+            f[2] = 0.0;
+        }
 
         // hasCurrency: "$" appears on the line.
-        f[3] = (line.indexOf('$') >= 0) ? 1.0 : 0.0;
+        if (line.indexOf('$') >= 0) {
+            f[3] = 1.0;
+        } else {
+            f[3] = 0.0;
+        }
 
         // hasPriceKeyword: line contains a price-component keyword.
-        f[4] = Pattern.compile("(?i).*\\b(" + PRICE_KEYWORDS + ")\\b.*").matcher(line).matches() ? 1.0 : 0.0;
+        if (Pattern.compile("(?i).*\\b(" + PRICE_KEYWORDS + ")\\b.*").matcher(line).matches()) {
+            f[4] = 1.0;
+        } else {
+            f[4] = 0.0;
+        }
 
         // looksLikeDate: "n/n" or "n-n" pattern, especially with a 4-digit year.
-        f[5] = (line.matches(".*\\b\\d{1,2}[/\\-]\\d{1,2}[/\\-]\\d{2,4}\\b.*")) ? 1.0 : 0.0;
+        if (line.matches(".*\\b\\d{1,2}[/\\-]\\d{1,2}[/\\-]\\d{2,4}\\b.*")) {
+            f[5] = 1.0;
+        } else {
+            f[5] = 0.0;
+        }
 
         // looksLikePhone: parentheses or dashed 10-digit shape.
-        f[6] = PHONE_PATTERN.matcher(line).matches() ? 1.0 : 0.0;
+        if (PHONE_PATTERN.matcher(line).matches()) {
+            f[6] = 1.0;
+        } else {
+            f[6] = 0.0;
+        }
 
         // looksLikeAuthCode: integer, value in [100, 1e7), no decimal, no price keyword.
         boolean integer = (v == Math.floor(v));
-        f[7] = (integer && v >= 100 && v < 10_000_000 && f[4] == 0.0) ? 1.0 : 0.0;
+        if (integer && v >= 100 && v < 10_000_000 && f[4] == 0.0) {
+            f[7] = 1.0;
+        } else {
+            f[7] = 0.0;
+        }
 
         // looksLikeQuantity: integer 1-9.
-        f[8] = (integer && v >= 1 && v <= 9) ? 1.0 : 0.0;
+        if (integer && v >= 1 && v <= 9) {
+            f[8] = 1.0;
+        } else {
+            f[8] = 0.0;
+        }
 
         // hasNoiseKeyword: the line contains a "this isn't a price" keyword
         // (version, exp, auth, ref, txn, mid, aid, tsi, tvr, suggested, ...).
-        f[9] = Pattern.compile("(?i).*\\b(" + NOISE_KEYWORDS + ")\\b.*").matcher(line).matches() ? 1.0 : 0.0;
+        if (Pattern.compile("(?i).*\\b(" + NOISE_KEYWORDS + ")\\b.*").matcher(line).matches()) {
+            f[9] = 1.0;
+        } else {
+            f[9] = 0.0;
+        }
 
         return f;
     }

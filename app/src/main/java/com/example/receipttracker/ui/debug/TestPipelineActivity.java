@@ -131,8 +131,20 @@ public class TestPipelineActivity extends Activity {
 
                 Logger.i("TestPipe", "Running OCR on " + bmp.getWidth() + "x" + bmp.getHeight());
                 String rawText = ReceiptOcr.recognizeText(bmp);
-                Logger.i("TestPipe", "OCR raw text length: " + (rawText == null ? 0 : rawText.length()));
-                sb.append("=== RAW OCR TEXT ===\n").append(rawText == null ? "(null)" : rawText)
+                int rawTextLen;
+                if (rawText == null) {
+                    rawTextLen = 0;
+                } else {
+                    rawTextLen = rawText.length();
+                }
+                Logger.i("TestPipe", "OCR raw text length: " + rawTextLen);
+                String rawTextDisplay;
+                if (rawText == null) {
+                    rawTextDisplay = "(null)";
+                } else {
+                    rawTextDisplay = rawText;
+                }
+                sb.append("=== RAW OCR TEXT ===\n").append(rawTextDisplay)
                         .append("\n\n");
 
                 Logger.i("TestPipe", "Running parser");
@@ -173,10 +185,16 @@ public class TestPipelineActivity extends Activity {
                 for (DetectedNumber n : numbers) {
                     double[] f = PriceClassifier.extractFeatures(n);
                     double p = PriceClassifier.predictProbability(f);
+                    String priceLabel;
+                    if (p >= PriceClassifier.PRICE_THRESHOLD) {
+                        priceLabel = "[PRICE]";
+                    } else {
+                        priceLabel = "[drop] ";
+                    }
                     sb.append(String.format(java.util.Locale.US,
                             "  $%-7.2f  P(isPrice)=%.3f  %s  line=%d  \"%s\"\n",
                             n.value, p,
-                            p >= PriceClassifier.PRICE_THRESHOLD ? "[PRICE]" : "[drop] ",
+                            priceLabel,
                             n.lineIndex, n.line.trim()));
                 }
 
@@ -194,10 +212,16 @@ public class TestPipelineActivity extends Activity {
                 sb.append("\n=== VERIFIER (for each candidate) ===\n");
                 for (DetectedNumber n : numbers) {
                     TotalVerifier.Result r = TotalVerifier.verify(n.value, numbers);
+                    String adjustedLabel;
+                    if (r.wasAdjusted) {
+                        adjustedLabel = "  [adjusted]";
+                    } else {
+                        adjustedLabel = "";
+                    }
                     sb.append(String.format(java.util.Locale.US,
                             "  $%.2f  ->  total=$%.2f  conf=%.0f%%%s  P(price)=%.2f  P(total)=%.2f  P(best-alt)=%.2f\n",
                             n.value, r.total, r.confidence * 100,
-                            r.wasAdjusted ? "  [adjusted]" : "",
+                            adjustedLabel,
                             r.priceProbability, r.candidateProbability, r.bestAlternativeProbability));
                 }
 

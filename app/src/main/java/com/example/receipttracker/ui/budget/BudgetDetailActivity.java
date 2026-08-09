@@ -87,13 +87,26 @@ public class BudgetDetailActivity extends AppCompatActivity {
             renderBudget();
         });
         budgetDao.sumSpentLive(budgetId).observe(this, s -> {
-            currentSpent = s == null ? 0 : s;
+            if (s == null) {
+                currentSpent = 0;
+            } else {
+                currentSpent = s;
+            }
             renderAmounts();
         });
         receiptDao.getByBudgetLive(budgetId).observe(this, list -> {
             adapter.set(list);
-            tvNoReceipts.setVisibility(list == null || list.isEmpty() ? View.VISIBLE : View.GONE);
-            rvReceipts.setVisibility(list == null || list.isEmpty() ? View.GONE : View.VISIBLE);
+            boolean listEmpty = list == null || list.isEmpty();
+            if (listEmpty) {
+                tvNoReceipts.setVisibility(View.VISIBLE);
+            } else {
+                tvNoReceipts.setVisibility(View.GONE);
+            }
+            if (listEmpty) {
+                rvReceipts.setVisibility(View.GONE);
+            } else {
+                rvReceipts.setVisibility(View.VISIBLE);
+            }
         });
 
         btnSetActive.setOnClickListener(v -> {
@@ -111,8 +124,16 @@ public class BudgetDetailActivity extends AppCompatActivity {
     private void renderBudget() {
         if (currentBudget == null) return;
         tvName.setText(currentBudget.name);
-        tvActiveChip.setVisibility(currentBudget.isActive ? View.VISIBLE : View.GONE);
-        btnSetActive.setText(currentBudget.isActive ? "Active budget" : "Set as active budget");
+        if (currentBudget.isActive) {
+            tvActiveChip.setVisibility(View.VISIBLE);
+        } else {
+            tvActiveChip.setVisibility(View.GONE);
+        }
+        if (currentBudget.isActive) {
+            btnSetActive.setText("Active budget");
+        } else {
+            btnSetActive.setText("Set as active budget");
+        }
         btnSetActive.setEnabled(!currentBudget.isActive);
         renderAmounts();
     }
@@ -197,7 +218,11 @@ public class BudgetDetailActivity extends AppCompatActivity {
     class LinkedReceiptsAdapter extends RecyclerView.Adapter<LinkedReceiptsAdapter.VH> {
         private List<Receipt> data = java.util.Collections.emptyList();
         void set(List<Receipt> d) {
-            this.data = d == null ? java.util.Collections.emptyList() : d;
+            if (d == null) {
+                this.data = java.util.Collections.emptyList();
+            } else {
+                this.data = d;
+            }
             notifyDataSetChanged();
         }
         @NonNull @Override
@@ -208,10 +233,22 @@ public class BudgetDetailActivity extends AppCompatActivity {
         @Override
         public void onBindViewHolder(@NonNull VH h, int position) {
             Receipt r = data.get(position);
-            h.merchant.setText(r.merchant == null || r.merchant.isEmpty() ? "(no merchant)" : r.merchant);
+            String merchantText;
+            if (r.merchant == null || r.merchant.isEmpty()) {
+                merchantText = "(no merchant)";
+            } else {
+                merchantText = r.merchant;
+            }
+            h.merchant.setText(merchantText);
             h.date.setText(MoneyUtils.formatDate(r.dateMillis));
             h.amount.setText(MoneyUtils.format(r.amount));
-            h.status.setText(r.matchGroupId == null ? "unmatched" : "matched");
+            String statusText;
+            if (r.matchGroupId == null) {
+                statusText = "unmatched";
+            } else {
+                statusText = "matched";
+            }
+            h.status.setText(statusText);
             h.status.setBackgroundResource(R.drawable.bg_chip_money);
             h.status.setTextColor(getColor(R.color.on_warning_container));
             h.itemView.setOnClickListener(v -> {

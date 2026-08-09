@@ -266,11 +266,21 @@ public class ScanReceiptActivity extends AppCompatActivity {
                     Logger.w("Scan", "OCR returned empty/null text");
                     Toast.makeText(this, R.string.scan_no_text, Toast.LENGTH_LONG).show();
                 }
+                int rawLen;
+                if (finalRaw == null) {
+                    rawLen = 0;
+                } else {
+                    rawLen = finalRaw.length();
+                }
                 Logger.i("Scan", "Launching EditReceiptActivity, photoPath="
-                        + savedPath[0] + ", rawTextLen=" + (finalRaw == null ? 0 : finalRaw.length()));
+                        + savedPath[0] + ", rawTextLen=" + rawLen);
                 Intent i = new Intent(this, EditReceiptActivity.class);
                 if (savedPath[0] != null) i.putExtra(EditReceiptActivity.EXTRA_PHOTO_PATH, savedPath[0]);
-                i.putExtra(EditReceiptActivity.EXTRA_RAW_TEXT, finalRaw == null ? "" : finalRaw);
+                if (finalRaw == null) {
+                    i.putExtra(EditReceiptActivity.EXTRA_RAW_TEXT, "");
+                } else {
+                    i.putExtra(EditReceiptActivity.EXTRA_RAW_TEXT, finalRaw);
+                }
                 startActivityForResult(i, REQ_EDIT);
             });
         });

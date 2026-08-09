@@ -62,7 +62,13 @@ public final class Logger {
             initialised = true;
         }
         installCrashHandler();
-        i(TAG, "Logger initialised; file=" + (logFile == null ? "?" : logFile.getAbsolutePath()));
+        String logFilePath;
+        if (logFile == null) {
+            logFilePath = "?";
+        } else {
+            logFilePath = logFile.getAbsolutePath();
+        }
+        i(TAG, "Logger initialised; file=" + logFilePath);
     }
 
     private static Thread.UncaughtExceptionHandler previousCrashHandler;

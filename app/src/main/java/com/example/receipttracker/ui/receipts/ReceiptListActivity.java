@@ -64,7 +64,13 @@ public class ReceiptListActivity extends AppCompatActivity {
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
-        menu.add(0, MENU_SHOW_DELETED, 0, showDeleted ? "Hide deleted" : "Show deleted");
+        String showDeletedLabel;
+        if (showDeleted) {
+            showDeletedLabel = "Hide deleted";
+        } else {
+            showDeletedLabel = "Show deleted";
+        }
+        menu.add(0, MENU_SHOW_DELETED, 0, showDeletedLabel);
         if (showDeleted) {
             menu.add(0, MENU_RESTORE_ALL, 1, "Restore all");
         } else {
@@ -104,12 +110,25 @@ public class ReceiptListActivity extends AppCompatActivity {
     }
 
     private void render(List<Receipt> data) {
-        int n = data == null ? 0 : data.size();
+        int n;
+        if (data == null) {
+            n = 0;
+        } else {
+            n = data.size();
+        }
         Logger.i(TAG, "render: " + n + " receipts (showDeleted=" + showDeleted + ")");
         adapter.set(data);
         boolean empty = data == null || data.isEmpty();
-        tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
-        rv.setVisibility(empty ? View.GONE : View.VISIBLE);
+        if (empty) {
+            tvEmpty.setVisibility(View.VISIBLE);
+        } else {
+            tvEmpty.setVisibility(View.GONE);
+        }
+        if (empty) {
+            rv.setVisibility(View.GONE);
+        } else {
+            rv.setVisibility(View.VISIBLE);
+        }
     }
 
     private void confirmClearAll() {
@@ -140,7 +159,11 @@ public class ReceiptListActivity extends AppCompatActivity {
         private List<Receipt> data = Collections.emptyList();
 
         void set(List<Receipt> d) {
-            this.data = d == null ? Collections.emptyList() : d;
+            if (d == null) {
+                this.data = Collections.emptyList();
+            } else {
+                this.data = d;
+            }
             notifyDataSetChanged();
         }
 
@@ -154,7 +177,13 @@ public class ReceiptListActivity extends AppCompatActivity {
         @Override
         public void onBindViewHolder(@NonNull VH h, int position) {
             Receipt r = data.get(position);
-            h.merchant.setText(r.merchant == null ? "(no merchant)" : r.merchant);
+            String merchantText;
+            if (r.merchant == null) {
+                merchantText = "(no merchant)";
+            } else {
+                merchantText = r.merchant;
+            }
+            h.merchant.setText(merchantText);
             h.date.setText(MoneyUtils.formatDate(r.dateMillis));
             h.amount.setText(MoneyUtils.format(r.amount));
             boolean deleted = r.deletedAt != null;
@@ -187,9 +216,15 @@ public class ReceiptListActivity extends AppCompatActivity {
             h.itemView.setOnClickListener(v -> {
                 if (deleted) {
                     // Offer restore instead of opening the editor on a deleted row.
+                    String restoreMerchant;
+                    if (r.merchant == null) {
+                        restoreMerchant = "(no merchant)";
+                    } else {
+                        restoreMerchant = r.merchant;
+                    }
                     new AlertDialog.Builder(ReceiptListActivity.this)
                             .setTitle("Restore receipt?")
-                            .setMessage("Bring '" + (r.merchant == null ? "(no merchant)" : r.merchant)
+                            .setMessage("Bring '" + restoreMerchant
                                     + "' back to the active list?")
                             .setNegativeButton(android.R.string.cancel, null)
                             .setPositiveButton("Restore", (d, w) -> {

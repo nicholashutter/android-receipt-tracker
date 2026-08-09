@@ -184,7 +184,12 @@ public final class MerchantClassifier {
         // Confidence: how much the top beats the rest, scaled by
         // top's own weight. A clear winner (big gap, high weight) gets
         // close to 1.0; a tight race gets ~0.5.
-        double runnerUpGap = scored.size() > 1 ? (top - scored.get(1).score) / Math.max(0.01, top) : 1.0;
+        double runnerUpGap;
+        if (scored.size() > 1) {
+            runnerUpGap = (top - scored.get(1).score) / Math.max(0.01, top);
+        } else {
+            runnerUpGap = 1.0;
+        }
         double confidence = Math.min(0.99, scored.get(0).entry.weight * (0.55 + 0.45 * runnerUpGap));
         Logger.i(TAG, "predict('" + rawMerchant + "') -> " + scored.get(0).entry.name
                 + "  conf=" + String.format("%.2f", confidence)

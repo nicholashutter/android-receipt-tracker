@@ -42,13 +42,28 @@ public class TransactionListActivity extends AppCompatActivity {
     private void render(List<BankTransaction> data) {
         adapter.set(data);
         boolean empty = data == null || data.isEmpty();
-        tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
-        rv.setVisibility(empty ? View.GONE : View.VISIBLE);
+        if (empty) {
+            tvEmpty.setVisibility(View.VISIBLE);
+        } else {
+            tvEmpty.setVisibility(View.GONE);
+        }
+        if (empty) {
+            rv.setVisibility(View.GONE);
+        } else {
+            rv.setVisibility(View.VISIBLE);
+        }
     }
 
     class TxAdapter extends RecyclerView.Adapter<TxAdapter.VH> {
         private List<BankTransaction> data = java.util.Collections.emptyList();
-        void set(List<BankTransaction> d) { this.data = d == null ? java.util.Collections.emptyList() : d; notifyDataSetChanged(); }
+        void set(List<BankTransaction> d) {
+            if (d == null) {
+                this.data = java.util.Collections.emptyList();
+            } else {
+                this.data = d;
+            }
+            notifyDataSetChanged();
+        }
 
         @NonNull @Override
         public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
@@ -61,7 +76,12 @@ public class TransactionListActivity extends AppCompatActivity {
         public void onBindViewHolder(@NonNull VH h, int position) {
             BankTransaction t = data.get(position);
             h.description.setText(t.description);
-            String account = (t.account == null || t.account.isEmpty()) ? "" : " - " + t.account;
+            String account;
+            if (t.account == null || t.account.isEmpty()) {
+                account = "";
+            } else {
+                account = " - " + t.account;
+            }
             h.dateAccount.setText(MoneyUtils.formatDate(t.dateMillis) + account);
             h.amount.setText(MoneyUtils.format(t.amount));
             if (t.matchGroupId != null) {

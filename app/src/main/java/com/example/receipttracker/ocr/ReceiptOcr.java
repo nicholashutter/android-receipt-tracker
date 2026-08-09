@@ -138,8 +138,14 @@ public final class ReceiptOcr {
         }
         List<OcrLine> out = result.get();
         long ms = System.currentTimeMillis() - t0;
+        int structuredLineCount;
+        if (out == null) {
+            structuredLineCount = 0;
+        } else {
+            structuredLineCount = out.size();
+        }
         Logger.i("OCR", "Recognized " + blockCount.get() + " blocks, "
-                + lineCount.get() + " lines, " + (out == null ? 0 : out.size())
+                + lineCount.get() + " lines, " + structuredLineCount
                 + " structured lines in " + ms + "ms");
         Logger.section("OCR END");
         return out;
@@ -153,8 +159,18 @@ public final class ReceiptOcr {
             public int compare(Text.TextBlock a, Text.TextBlock b) {
                 Rect ra = a.getBoundingBox();
                 Rect rb = b.getBoundingBox();
-                int ya = ra == null ? 0 : ra.top;
-                int yb = rb == null ? 0 : rb.top;
+                int ya;
+                if (ra == null) {
+                    ya = 0;
+                } else {
+                    ya = ra.top;
+                }
+                int yb;
+                if (rb == null) {
+                    yb = 0;
+                } else {
+                    yb = rb.top;
+                }
                 return Integer.compare(ya, yb);
             }
         });

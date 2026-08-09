@@ -74,11 +74,25 @@ public class BudgetListActivity extends AppCompatActivity {
     }
 
     private void render(List<Budget> budgets) {
-        Logger.i(TAG, "render: " + (budgets == null ? 0 : budgets.size()) + " budgets");
+        int budgetCount;
+        if (budgets == null) {
+            budgetCount = 0;
+        } else {
+            budgetCount = budgets.size();
+        }
+        Logger.i(TAG, "render: " + budgetCount + " budgets");
         adapter.set(budgets);
         boolean empty = budgets == null || budgets.isEmpty();
-        rv.setVisibility(empty ? View.GONE : View.VISIBLE);
-        tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
+        if (empty) {
+            rv.setVisibility(View.GONE);
+        } else {
+            rv.setVisibility(View.VISIBLE);
+        }
+        if (empty) {
+            tvEmpty.setVisibility(View.VISIBLE);
+        } else {
+            tvEmpty.setVisibility(View.GONE);
+        }
     }
 
     private void showCreateDialog(Budget edit) {
@@ -92,13 +106,35 @@ public class BudgetListActivity extends AppCompatActivity {
             etMax.setText(String.valueOf(edit.maxAmount));
             cbActive.setChecked(edit.isActive);
         }
+        String title;
+        if (isEdit) {
+            title = "Edit budget";
+        } else {
+            title = "New budget";
+        }
+        String positiveLabel;
+        if (isEdit) {
+            positiveLabel = "Save";
+        } else {
+            positiveLabel = "Create";
+        }
         AlertDialog.Builder b = new AlertDialog.Builder(this)
-                .setTitle(isEdit ? "Edit budget" : "New budget")
+                .setTitle(title)
                 .setView(view)
                 .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton(isEdit ? "Save" : "Create", (d, w) -> {
-                    String name = etName.getText() == null ? "" : etName.getText().toString().trim();
-                    String maxStr = etMax.getText() == null ? "" : etMax.getText().toString().trim();
+                .setPositiveButton(positiveLabel, (d, w) -> {
+                    String name;
+                    if (etName.getText() == null) {
+                        name = "";
+                    } else {
+                        name = etName.getText().toString().trim();
+                    }
+                    String maxStr;
+                    if (etMax.getText() == null) {
+                        maxStr = "";
+                    } else {
+                        maxStr = etMax.getText().toString().trim();
+                    }
                     if (name.isEmpty() || maxStr.isEmpty()) {
                         Toast.makeText(this, "Name and max are required", Toast.LENGTH_SHORT).show();
                         return;
@@ -162,7 +198,11 @@ public class BudgetListActivity extends AppCompatActivity {
         private final Map<Long, Double> spentByBudget = new HashMap<>();
 
         void set(List<Budget> d) {
-            this.data = d == null ? java.util.Collections.emptyList() : d;
+            if (d == null) {
+                this.data = java.util.Collections.emptyList();
+            } else {
+                this.data = d;
+            }
             notifyDataSetChanged();
             refreshSpent();
         }
@@ -199,18 +239,32 @@ public class BudgetListActivity extends AppCompatActivity {
             double spent = spentByBudget.getOrDefault(b.id, 0.0);
             h.amounts.setText(String.format("%s / %s",
                     MoneyUtils.format(spent), MoneyUtils.format(b.maxAmount)));
-            int pct = b.maxAmount > 0 ? (int) Math.min(100, Math.round(spent * 100.0 / b.maxAmount)) : 0;
+            int pct;
+            if (b.maxAmount > 0) {
+                pct = (int) Math.min(100, Math.round(spent * 100.0 / b.maxAmount));
+            } else {
+                pct = 0;
+            }
             h.progress.setProgress(pct);
             h.status.setText(pct + "% used");
-            h.activeChip.setVisibility(b.isActive ? View.VISIBLE : View.GONE);
+            if (b.isActive) {
+                h.activeChip.setVisibility(View.VISIBLE);
+            } else {
+                h.activeChip.setVisibility(View.GONE);
+            }
             h.itemView.setOnClickListener(v -> {
                 Intent i = new Intent(BudgetListActivity.this, BudgetDetailActivity.class);
                 i.putExtra(BudgetDetailActivity.EXTRA_BUDGET_ID, b.id);
                 startActivity(i);
             });
             h.itemView.setOnLongClickListener(v -> {
-                String[] opts = {b.isActive ? "Deactivate" : "Set as active",
-                        "Edit", "Delete"};
+                String firstOpt;
+                if (b.isActive) {
+                    firstOpt = "Deactivate";
+                } else {
+                    firstOpt = "Set as active";
+                }
+                String[] opts = {firstOpt, "Edit", "Delete"};
                 new AlertDialog.Builder(BudgetListActivity.this)
                         .setTitle(b.name)
                         .setItems(opts, (d, w) -> {

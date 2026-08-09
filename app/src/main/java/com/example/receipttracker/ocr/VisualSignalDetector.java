@@ -114,7 +114,12 @@ public final class VisualSignalDetector {
                 if (isDark(p)) dark++;
             }
         }
-        float highlightScore = total == 0 ? 0f : (float) yellow / total;
+        float highlightScore;
+        if (total == 0) {
+            highlightScore = 0f;
+        } else {
+            highlightScore = (float) yellow / total;
+        }
         float circleScore = 0f;
         // Suppress circle detection on bboxes that are clearly wider
         // than they are tall — that's a line of text, not a number, and

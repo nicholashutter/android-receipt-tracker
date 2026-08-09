@@ -161,7 +161,13 @@ public class MatchActivity extends AppCompatActivity {
                 SuggestVH vh = (SuggestVH) holder;
                 if (o instanceof SuggestionRow) {
                     SuggestionRow s = (SuggestionRow) o;
-                    vh.left.setText(s.r.merchant == null ? "(no merchant)" : s.r.merchant);
+                    String sMerchant;
+                    if (s.r.merchant == null) {
+                        sMerchant = "(no merchant)";
+                    } else {
+                        sMerchant = s.r.merchant;
+                    }
+                    vh.left.setText(sMerchant);
                     vh.leftAmount.setText(MoneyUtils.format(s.r.amount));
                     if (s.t != null) {
                         vh.right.setText(s.t.description + " - " + MoneyUtils.formatDate(s.t.dateMillis));
@@ -185,7 +191,13 @@ public class MatchActivity extends AppCompatActivity {
             } else if (holder instanceof MatchedVH) {
                 MatchedRow m = (MatchedRow) o;
                 MatchedVH vh = (MatchedVH) holder;
-                vh.left.setText(m.r.merchant == null ? "(no merchant)" : m.r.merchant);
+                String mMerchant;
+                if (m.r.merchant == null) {
+                    mMerchant = "(no merchant)";
+                } else {
+                    mMerchant = m.r.merchant;
+                }
+                vh.left.setText(mMerchant);
                 vh.leftAmount.setText(MoneyUtils.format(m.r.amount));
                 vh.right.setText(m.t.description + " - " + MoneyUtils.formatDate(m.t.dateMillis)
                         + " - " + MoneyUtils.format(m.t.amount));

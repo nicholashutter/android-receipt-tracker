@@ -639,10 +639,20 @@ public class EditReceiptActivity extends AppCompatActivity {
             TotalVerifier.Result r = TotalVerifier.verify(picked.value, cachedNumbers, entered);
 
             runOnUiThread(() -> {
-                renderVerifier(picked, r, entered, autoPicked);
+                // Show the verdict panel for comparison, but DON'T let it
+                // override the re-pick — the user explicitly chose this
+                // number, so it should be what shows up in the budget.
+                renderVerifier(picked, r, entered, autoPicked,
+                        /*overwriteAmount=*/false, /*showToast=*/true);
 
-                // Capture the verified total so save can offer to add to a budget.
-                lastVerifiedTotal = r.recommendedTotal;
+                // Honor the re-pick: the amount field and the "picked in
+                // the budget" value both track the user's choice, not
+                // the verifier's adjusted recommendation. The panel still
+                // shows the comparison so the user can see if the
+                // verifier disagreed.
+                etAmount.setText(String.format(Locale.US, "%.2f", picked.value));
+
+                lastVerifiedTotal = picked.value;
 
                 budgetPromptHandled = false;
             });
@@ -652,6 +662,26 @@ public class EditReceiptActivity extends AppCompatActivity {
 
     private void renderVerifier(DetectedNumber picked, TotalVerifier.Result r,
                                 double entered, boolean autoPicked) {
+        renderVerifier(picked, r, entered, autoPicked, /*overwriteAmount=*/true,
+                /*showToast=*/true);
+    }
+
+
+    /**
+     * @param overwriteAmount when true (the default), the amount field is
+     *     replaced with {@code r.recommendedTotal}. When false, the field is
+     *     left untouched — used by callers (re-pick and save-time sanity
+     *     check) that want the verdict panel for comparison but must NOT
+     *     clobber the user's explicit choice.
+     * @param showToast when false, the "Re-picked: $X.XX" confirmation toast
+     *     is suppressed. Used by the save-time sanity check, which fires its
+     *     own "Sanity check: $X.XX" toast; firing the re-pick toast too
+     *     would be misleading (the user didn't re-pick this number — the
+     *     sanity check chose it as the closest candidate).
+     */
+    private void renderVerifier(DetectedNumber picked, TotalVerifier.Result r,
+                                double entered, boolean autoPicked,
+                                boolean overwriteAmount, boolean showToast) {
         applyVerdictBackground(r);
 
         StringBuilder body = new StringBuilder();
@@ -719,17 +749,37 @@ public class EditReceiptActivity extends AppCompatActivity {
 
         tvVerifier.setVisibility(View.VISIBLE);
 
-        // Auto-apply the verifier's recommended total
-        etAmount.setText(String.format(Locale.US, "%.2f", r.recommendedTotal));
+        // Auto-apply the verifier's recommended total, unless the caller
+        // explicitly opted out (re-pick honors the user's pick; save-time
+        // sanity check is advisory only).
+        if (overwriteAmount) {
+            etAmount.setText(String.format(Locale.US, "%.2f", r.recommendedTotal));
+        }
 
         // For auto-pick, the amount was pre-filled, so no toast — the
         // verdict panel communicates the result. For manual picks
         // (the user just tapped a number in the dialog) a toast is
-        // still useful confirmation.
-        if (!autoPicked) {
-            String toast = String.format(Locale.US,
-                    "Total: $%.2f  (%.0f%%, P(total)=%.2f, source=%s)",
-                    r.recommendedTotal, r.confidence * 100, r.candidateProbability, r.recommendedSource);
+        // still useful confirmation. When the caller's honoring the
+        // re-pick (overwriteAmount=false), the amount field shows the
+        // picked value, not the verifier's adjusted recommendation —
+        // so the toast should reflect that, with a note if the
+        // verifier disagreed.
+        if (!autoPicked && showToast) {
+            String toast;
+
+            if (overwriteAmount) {
+                toast = String.format(Locale.US,
+                        "Total: $%.2f  (%.0f%%, P(total)=%.2f, source=%s)",
+                        r.recommendedTotal, r.confidence * 100, r.candidateProbability, r.recommendedSource);
+            } else if (r.recommendedTotal == picked.value) {
+                toast = String.format(Locale.US,
+                        "Re-picked: $%.2f  (verifier agrees, %.0f%%)",
+                        picked.value, r.confidence * 100);
+            } else {
+                toast = String.format(Locale.US,
+                        "Re-picked: $%.2f  (verifier recommends $%.2f, %.0f%%)",
+                        picked.value, r.recommendedTotal, r.confidence * 100);
+            }
 
             Toast.makeText(this, toast, Toast.LENGTH_LONG).show();
         }
@@ -807,8 +857,16 @@ public class EditReceiptActivity extends AppCompatActivity {
 
                 Logger.i("Edit", "save-time sanity: " + msg);
 
-                // Show the verdict in the on-screen panel too, so the user sees the math.
-                renderVerifier(candidate, r, entered, /*autoPicked=*/false);
+                // Show the verdict in the on-screen panel too, so the user
+                // sees the math. Advisory only — do NOT overwrite the
+                // entered amount: if the user re-picked or typed a value,
+                // that's the amount that should be saved and reflected in
+                // the budget. Suppress the "Re-picked" toast too — the
+                // user didn't re-pick this number (the sanity check chose
+                // it as the closest candidate); the sanity check's own
+                // toast below already shows the comparison.
+                renderVerifier(candidate, r, entered, /*autoPicked=*/false,
+                        /*overwriteAmount=*/false, /*showToast=*/false);
 
                 Toast.makeText(this, msg.toString(), Toast.LENGTH_LONG).show();
 

@@ -24,6 +24,10 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Sign the release APK with the debug key so it's installable
+            // for ad-hoc distribution. Swap in a real release signingConfig
+            // before Play Store publishing (see docs/asset-pipeline.md).
+            signingConfig signingConfigs.debug
         }
     }
     compileOptions {

@@ -660,6 +660,8 @@ public final class ReceiptParser {
 
         int emphasisedCount = 0;
 
+        int handwritingHits = 0;
+
         for (int i = 0; i < n; i++) {
             if (!hasNumber[i]) continue;
 
@@ -703,8 +705,23 @@ public final class ReceiptParser {
                                     ? VisualSignalDetector.detect(bitmap, el.bbox)
                                     : new VisualSignalDetector.Signals(0f, 0f);
 
+                            // If the user visually marked this number, ask
+                            // Tesseract to re-read the bbox. Handwritten
+                            // digits are exactly the case where ML Kit
+                            // returns garbage and the user pointed at it on
+                            // purpose, so trust the second opinion here.
+                            Double handwritingValue = null;
+
+                            if (sig.isEmphasised() && bitmap != null && el.bbox != null) {
+                                handwritingValue = HandwritingOcr.get().recognizeFirstNumber(bitmap, el.bbox);
+
+                                if (handwritingValue != null) handwritingHits++;
+                            }
+
+
                             out.add(new DetectedNumber(v, line, i, keyword,
-                                    sig.highlightScore, sig.circleScore, el.bbox));
+                                    sig.highlightScore, sig.circleScore, el.bbox,
+                                    handwritingValue));
 
                             if (sig.isEmphasised()) emphasisedCount++;
 
@@ -726,6 +743,15 @@ public final class ReceiptParser {
                     ? VisualSignalDetector.detect(bitmap, ocrLine.bbox)
                     : new VisualSignalDetector.Signals(0f, 0f);
 
+            Double handwritingValue = null;
+
+            if (sig.isEmphasised() && bitmap != null && ocrLine.bbox != null) {
+                handwritingValue = HandwritingOcr.get().recognizeFirstNumber(bitmap, ocrLine.bbox);
+
+                if (handwritingValue != null) handwritingHits++;
+            }
+
+
             for (String num : nums) {
                 try {
                     double v = Double.parseDouble(num);
@@ -733,7 +759,8 @@ public final class ReceiptParser {
                     if (v <= 0) continue;
 
                     out.add(new DetectedNumber(v, line, i, keyword,
-                            sig.highlightScore, sig.circleScore, ocrLine.bbox));
+                            sig.highlightScore, sig.circleScore, ocrLine.bbox,
+                            handwritingValue));
 
                     if (sig.isEmphasised()) emphasisedCount++;
                 } catch (NumberFormatException ignored) { }
@@ -742,7 +769,8 @@ public final class ReceiptParser {
 
 
         Logger.i("Parser", "extractAllNumbersWithVisualSignals: " + out.size()
-                + " numbers from " + n + " lines; " + emphasisedCount + " visually emphasised");
+                + " numbers from " + n + " lines; " + emphasisedCount + " visually emphasised; "
+                + handwritingHits + " re-recognised by Tesseract (handwriting)");
 
         return out;
     }

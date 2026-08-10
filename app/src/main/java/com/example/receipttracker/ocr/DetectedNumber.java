@@ -52,17 +52,33 @@ public final class DetectedNumber {
     @Nullable public final android.graphics.Rect bbox;
 
 
+    /**
+     * Value re-recognised by Tesseract (handwriting OCR) for the same bbox.
+     * Null when Tesseract wasn't run, wasn't available (no traineddata),
+     * or didn't see a number. When non-null AND the number is visually
+     * emphasised, callers should prefer this over {@link #value}, which
+     * is what ML Kit's print-optimised Latin recognizer returned.
+     */
+    @Nullable public final Double handwritingValue;
+
+
     public DetectedNumber(double value, @NonNull String line, int lineIndex,
                           @Nullable String keyword) {
-        this(value, line, lineIndex, keyword, 0f, 0f, null);
+        this(value, line, lineIndex, keyword, 0f, 0f, null, null);
     }
 
 
     public DetectedNumber(double value, @NonNull String line, int lineIndex,
                           @Nullable String keyword, float highlightScore,
                           float circleScore, @Nullable android.graphics.Rect bbox) {
-        this.value = value;
+        this(value, line, lineIndex, keyword, highlightScore, circleScore, bbox, null);
+    }
 
+
+    public DetectedNumber(double value, @NonNull String line, int lineIndex,
+                          @Nullable String keyword, float highlightScore,
+                          float circleScore, @Nullable android.graphics.Rect bbox,
+                          @Nullable Double handwritingValue) {
         this.line = line;
 
         this.lineIndex = lineIndex;
@@ -74,12 +90,51 @@ public final class DetectedNumber {
         this.circleScore = circleScore;
 
         this.bbox = bbox;
+
+        this.handwritingValue = handwritingValue;
+
+        // If the user marked this number AND Tesseract re-recognised a
+        // value for it, prefer the Tesseract value as the canonical
+        // "value" of this number. That's the strongest "this is the
+        // total" signal we have — a hand-written digit the user
+        // pointed at — and it lets every downstream caller use
+        // `n.value` without having to remember to call
+        // `n.effectiveValue()`.
+        if (handwritingValue != null && isVisuallyEmphasised()) {
+            this.value = handwritingValue;
+        } else {
+            this.value = value;
+        }
     }
 
 
     /** True if the user marked this number visually (highlighter or circle). */
     public boolean isVisuallyEmphasised() {
         return highlightScore >= 0.20f || circleScore >= 0.25f;
+    }
+
+
+    /**
+     * True if Tesseract found a value AND the visual signal says the user
+     * marked this number — i.e. the strongest "this is the total" signal
+     * we have (a hand-written digit the user circled or highlighted).
+     */
+    public boolean isHandwrittenAndMarked() {
+        return handwritingValue != null && isVisuallyEmphasised();
+    }
+
+
+    /**
+     * The "effective" value for the model: if Tesseract found a number
+     * and the number is visually emphasised, return that. Otherwise the
+     * ML Kit value.
+     */
+    public double effectiveValue() {
+        if (isHandwrittenAndMarked()) {
+            return handwritingValue;
+        }
+
+        return value;
     }
 
 

@@ -10,6 +10,9 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+
+        // tesseract4android is published on JitPack, not Maven Central.
+        maven { url 'https://jitpack.io' }
     }
 }
 

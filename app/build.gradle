@@ -63,6 +63,15 @@ dependencies {
     // ML Kit on-device text recognition (Latin script)
     implementation 'com.google.mlkit:text-recognition:16.0.0'
 
+    // Tesseract for handwritten text recognition. ML Kit's Latin model is
+    // print-optimised and misses most pen-written digits/words; tesseract4android
+    // is the on-device fallback for visually-emphasised bboxes (user wrote a
+    // tip, circled the total in pen, etc.). The `eng.traineddata` file is NOT
+    // bundled in this repo (~22MB, large for git) — drop it into
+    // app/src/main/assets/tessdata/eng.traineddata and the OCR will pick it up.
+    // See scripts/fetch_tesseract_eng.sh for a one-line fetch.
+    implementation 'cz.adaptech.tesseract4android:tesseract4android:4.7.0'
+
     // Room (local DB)
     implementation 'androidx.room:room-runtime:2.6.1'
     annotationProcessor 'androidx.room:room-compiler:2.6.1'

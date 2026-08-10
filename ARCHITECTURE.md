@@ -237,6 +237,16 @@ Both scores attach to a `DetectedNumber` as `highlightScore` and `circleScore`, 
 
 `DetectedNumber.isVisuallyEmphasised()` is the public predicate (any of the two thresholds tripped). `ReceiptParser.pickCircledCandidate` uses it as Priority 0: a visually-emphasised number wins the auto-pick regardless of what the text-based heuristics say.
 
+## Handwriting recognition (Tesseract)
+
+For every number that the visual-signal detector flags as marked, `ReceiptParser.extractAllNumbersWithVisualSignals` also runs `ocr/HandwritingOcr.java` on the same bbox. `HandwritingOcr` is a thin wrapper around `tesseract4android` 4.7 (LSTM, English). ML Kit's Latin text recognizer is print-optimised and misreads most handwritten digits — a pen-written tip often comes back as empty or as a near-match like `$1S.00`. Tesseract handles handwriting much better, at the cost of a ~22 MB `eng.traineddata` file.
+
+If Tesseract finds a number, it lands in `DetectedNumber.handwritingValue`. When **both** the visual signal AND a handwriting value are present, the `DetectedNumber.value` field is set to the Tesseract result (rather than ML Kit's misread), so every downstream caller of `n.value` (the verifier, the verdict panel, the user's amount field) does the right thing with no changes. `DetectedNumber.isHandwrittenAndMarked()` is the public predicate.
+
+The 22 MB `eng.traineddata` is intentionally not bundled. Run `bash scripts/fetch_tesseract_eng.sh` to fetch it (standard / `fast` / `best` variants). Without the file, `HandwritingOcr.isAvailable()` returns false and the pipeline falls back to ML Kit's number for marked bboxes — the visual signals still work, the user can still see and override, we just trust ML Kit's number rather than Tesseract's. See `app/src/main/assets/tessdata/README.md`.
+
+The 12th feature in the `LinearLearner` is `isHandwritten` (0 or 1: was the value re-OCR'd by Tesseract on a marked bbox?). Three new training examples anchor it at a strongly positive weight, so a hand-written digit the user pointed at is the highest-trust "this is the total" signal the model produces.
+
 ## 10-run ensemble verifier
 
 `TotalVerifier.verifyEnsemble(seed, allNumbers, entered, N)` is the "panel vote" version of `verify()`. A single pass is sensitive to noise — a stray `0.99` or `$2.99` can be misread as the total — so the ensemble runs the full verify pipeline on the top-N candidates ranked by `P(isTotal)` and votes on the result.

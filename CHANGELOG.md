@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+- **Handwriting OCR for visually-emphasised numbers.** `HandwritingOcr`
+  is a thin wrapper around `tesseract4android` 4.7 (LSTM). The
+  `ReceiptParser.extractAllNumbersWithVisualSignals` pipeline now, for
+  every number that the visual-signal detector flags as marked
+  (yellow highlighter or pen circle), asks Tesseract to re-recognise
+  the same bbox. If Tesseract finds a number, it lands in
+  `DetectedNumber.handwritingValue`; when both the visual signal AND
+  a handwriting value are present, `DetectedNumber.value` is set to
+  the Tesseract result (every downstream caller of `n.value` does the
+  right thing with no changes). This is exactly the "user wrote a
+  tip in pen, circled it" case that ML Kit's print-optimised Latin
+  recognizer gets wrong. The `eng.traineddata` file (~22 MB) is NOT
+  bundled in the repo — run `bash scripts/fetch_tesseract_eng.sh` to
+  fetch it. Without the file, the visual signals still work and the
+  pipeline falls back to ML Kit's number for marked bboxes.
+- **12th `isHandwritten` feature in the LinearLearner.** Boolean
+  feature: 1 if the value came from Tesseract re-OCR on a marked
+  bbox, 0 otherwise. The trained weights for the four emphasis
+  features (`highlightScore`, `circleScore`, plus the new
+  `isHandwritten`) are the strongest "this is the total" signal
+  the model has. Three new training examples
+  (`[0,0,0,0,1,0,0,0,0,0.7,0.0,1]`, `[0,0,0,1,1,0,0,0,0,0.0,0.6,1]`,
+  `[1,0,1,1,1,0,1,0,0,0.5,0.4,1]`) anchor the new feature at a
+  strongly positive weight.
+- **Verdict-panel line for handwriting.** When the picked number
+  has a Tesseract value AND a visual emphasis, the verdict panel
+  now shows `Handwritten — Tesseract re-recognised this bbox`
+  below the `Visually emphasised` line. Also reflected in the
+  auto-pick log as `[HANDWRITTEN — Tesseract re-recognised as $X.XX]`.
+- **Bank-API integration report.** `docs/decisions/0002-bank-api-integration.md`
+  is a decision doc comparing Plaid / Finicity / MX / Yodlee / Akoya
+  / Stripe Financial Connections on Android, with current 2026
+  pricing, a 16.5-day effort estimate broken into 6 phases, and a
+  recommendation to **defer the integration** until the app has
+  shipped and external users have hit the manual-entry friction
+  enough to justify the cost (server dependency, manifest's
+  `INTERNET` permission, real-money billing).
+- **`scripts/fetch_tesseract_eng.sh`** — one-liner to download the
+  Tesseract `eng.traineddata` into the right place, with `fast` and
+  `best` variants.
+- **`app/src/main/assets/tessdata/README.md`** — documents why the
+  traineddata isn't in the repo and how to add it.
+
 ## [1.0.1] — 2026-08-10
 
 Patch release. Pre-alpha — flagged as a pre-release on GitHub.

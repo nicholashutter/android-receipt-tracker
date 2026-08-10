@@ -162,6 +162,14 @@ On a fresh scan, `EditReceiptActivity` re-runs OCR against the saved photo (with
 
 `ReceiptParser.guessMerchant` produces a raw guess (first non-junk caps line) and `MerchantClassifier.predict(raw)` canonicalises it against `app/src/main/assets/merchants.json` — a curated list of about 100 common US merchants with case-insensitive aliases (e.g. "WHOLE FOODS" / "WFM" / "Whole Foods Market" all match "Whole Foods Market"). The classifier scores each entry by `weight × best_alias_match`, where whole-string alias matches score 1.0 and token-substring matches score a hit/total ratio, and returns the top match with a [0,1] confidence. `EditReceiptActivity` uses the canonical name when the confidence clears 0.40 and leaves the parsed string alone below that threshold, so noisy or unfamiliar merchants don't get rewritten into something wrong. Adding a new merchant is a JSON edit, not a code change.
 
+### How handwritten totals are read
+
+ML Kit's print-optimised Latin recognizer gets handwritten digits wrong, so the standard "user wrote a tip in pen, circled it" case fails the first OCR pass. `HandwritingOcr` (Tesseract 4 LSTM) handles that: for every number that `VisualSignalDetector` flags as marked, the parser re-recognises the same bbox with Tesseract. If Tesseract finds a value, the parser's `DetectedNumber.value` field is set to the Tesseract result and the auto-pick, the verifier, the verdict panel, and the user's amount field all see the right number.
+
+To enable: drop `eng.traineddata` (~22 MB) into `app/src/main/assets/tessdata/`. The file isn't bundled (would dominate git history) — fetch it with `bash scripts/fetch_tesseract_eng.sh` (or `… fast` / `… best` for size/accuracy tradeoffs). Without it, the pipeline falls back to ML Kit's number for marked bboxes; the visual signals still work, the user can still see and override, we just trust ML Kit rather than Tesseract.
+
+`LinearLearner` carries a 12th feature, `isHandwritten` (0 or 1), so a hand-written digit the user pointed at is the highest-trust "this is the total" signal the model produces.
+
 ## Project layout
 
 ```
@@ -180,13 +188,14 @@ androidscanner/
 │       │   ├── match/
 │       │   │   ├── LogisticRegression.java    # shared train() / predict() / sigmoid()
 │       │   │   ├── PriceClassifier.java       # stage 1: is this a price?
-│       │   │   ├── LinearLearner.java         # stage 2: is this the total? (11 features)
+│       │   │   ├── LinearLearner.java         # stage 2: is this the total? (12 features incl. isHandwritten)
 │       │   │   └── TotalVerifier.java         # combines both + cross-check + sanity + ensemble
 │       │   ├── ocr/
 │       │   │   ├── ReceiptOcr.java            # ML Kit wrapper; recognizeText + recognizeWithBoxes
 │       │   │   ├── ReceiptParser.java         # merchant/date/line items/numbers; pickCircledCandidate
-│       │   │   ├── DetectedNumber.java        # POJO { value, line, lineIndex, keyword, hl, cr, bbox }
+│       │   │   ├── DetectedNumber.java        # POJO { value, line, lineIndex, keyword, hl, cr, bbox, handwritingValue }
 │       │   │   ├── VisualSignalDetector.java  # yellow-highlight + pen-circle pixel scoring
+│       │   │   ├── HandwritingOcr.java       # Tesseract 4 LSTM wrapper for re-OCR of marked bboxes
 │       │   │   ├── MerchantClassifier.java    # JSON-backed canonical-name + category guess
 │       │   │   ├── ParsedReceipt.java
 │       │   │   └── ReceiptImageStore.java     # JPEG write + sampled decode

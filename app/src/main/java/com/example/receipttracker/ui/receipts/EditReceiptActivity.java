@@ -482,11 +482,18 @@ public class EditReceiptActivity extends AppCompatActivity {
                 return;
             }
 
+            String handwritingNote;
+            if (picked.isHandwrittenAndMarked()) {
+                handwritingNote = " [HANDWRITTEN — Tesseract re-recognised as $" + picked.value + "]";
+            } else {
+                handwritingNote = "";
+            }
             Logger.i("Edit", "autoPick: chose $" + picked.value
                     + " from line " + picked.lineIndex
                     + " (keyword=" + picked.keyword
                     + ", hl=" + String.format(Locale.US, "%.2f", picked.highlightScore)
-                    + ", cr=" + String.format(Locale.US, "%.2f", picked.circleScore) + ")");
+                    + ", cr=" + String.format(Locale.US, "%.2f", picked.circleScore)
+                    + handwritingNote + ")");
 
             // Use the 10-run ensemble for the final verdict.
             runVerifierEnsemble(picked, /*autoPicked=*/true);
@@ -700,6 +707,11 @@ public class EditReceiptActivity extends AppCompatActivity {
             body.append(String.format(Locale.US,
                     "  Visually emphasised (hl=%.2f cr=%.2f)%n",
                     picked.highlightScore, picked.circleScore));
+        }
+
+        if (picked.isHandwrittenAndMarked()) {
+            body.append(String.format(Locale.US,
+                    "  Handwritten — Tesseract re-recognised this bbox%n"));
         }
 
         if (entered > 0) {

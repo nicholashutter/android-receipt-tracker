@@ -35,12 +35,17 @@ import java.util.Locale;
  *   <li>{@code looksLikeCode}       – 1 if integer and >= 100 (auth code, txn id)</li>
  *   <li>{@code highlightScore}      – 0..1, fraction of yellow pixels in the bounding box</li>
  *   <li>{@code circleScore}         – 0..1, ring-vs-core dark pixel ratio (pen circle heuristic)</li>
+ *   <li>{@code isHandwritten}       – 1 if the value came from Tesseract re-OCR (handwriting)
+ *                                    on a visually-emphasised bbox, 0 otherwise</li>
  * </ul>
  *
  * <p>The two visual-signal features are weighted strongly positive:
  * a human deliberately marked a number with highlighter or a pen
  * circle, and that's the strongest "this is the total" signal we
- * can get from the source photo.</p>
+ * can get from the source photo. The {@code isHandwritten} feature
+ * is the "and the user wrote it by hand" corollary: a hand-written
+ * digit the user pointed at with a highlighter is the highest-trust
+ * total the pipeline can produce.</p>
  *
  * <p>Output: sigmoid(weights · features + bias) ∈ [0, 1] — interpretable
  * as P(this price is the real total).</p>
@@ -61,7 +66,8 @@ public final class LinearLearner {
             "looksLikeDate",
             "looksLikeCode",
             "highlightScore",
-            "circleScore"
+            "circleScore",
+            "isHandwritten"
     };
 
 
@@ -203,6 +209,17 @@ public final class LinearLearner {
         f[10] = clamp01(n.circleScore);
 
 
+        // 12th feature: handwriting. True when the value was re-OCR'd
+        // by Tesseract on a visually-emphasised bbox — i.e. the user
+        // wrote a number in pen and pointed at it. This is the
+        // strongest "this is the total" signal we have.
+        if (n.isHandwrittenAndMarked()) {
+            f[11] = 1.0;
+        } else {
+            f[11] = 0.0;
+        }
+
+
         return f;
     }
 
@@ -312,49 +329,61 @@ public final class LinearLearner {
 
 
         // === POSITIVE (label=1): looks like a real total ===
-        // hasTotal, hasComp, isLargest, inBottom, hasDec, belowSub, close, date, code, hl, cr
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        // hasTotal, hasComp, isLargest, inBottom, hasDec, belowSub, close, date, code, hl, cr, handwriting
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 1,1, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 1,1, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 0, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 0, 0, 0, 0, 0, 0}, 1.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0, 0, 0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
 
         // Highlighted (yellow highlighter) — the visual signal alone is enough to call it a total.
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.8, 0.0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.8, 0.0, 0}, 1.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.6, 0.0}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.6, 0.0, 0}, 1.0));
 
         // Circled (pen circle around a number) — same: strong positive.
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.0, 0.6}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.0, 0.6, 0}, 1.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.0, 0.5}, 1.0));
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.0, 0.5, 0}, 1.0));
+
+        // Handwritten + marked: the user wrote a number in pen AND pointed
+        // at it. The value came from Tesseract (so ML Kit's print-OCR
+        // didn't see it as a number, and the hasTotalKeyword/isLargest
+        // features are often 0 because the line text is unrecognised
+        // garbage). The model should learn to give these a strong
+        // "this is the total" signal anyway, because a human told us so.
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.7, 0.0, 1}, 1.0));
+
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,1, 1, 0, 0, 0, 0, 0.0, 0.6, 1}, 1.0));
+
+        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.5, 0.4, 1}, 1.0));
 
 
         // === NEGATIVE (label=0): NOT a total ===
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 0, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 0, 0, 0, 0, 0, 0, 0}, 0.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0, 0, 0, 0}, 0.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0, 0, 0, 0}, 0.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 1, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 1, 0, 0, 0, 0, 0, 0}, 0.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 1, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 1, 0, 0, 0, 0}, 0.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 1, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 1, 0, 0, 0}, 0.0));
 
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 0, 0, 0, 0}, 0.0));
 
         // A non-emphasised subtotal is still a subtotal, not a total.
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,1, 1, 0, 0, 0, 0, 0, 0}, 0.0));
+        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,1, 1, 0, 0, 0, 0, 0, 0, 0}, 0.0));
 
         return ex;
     }

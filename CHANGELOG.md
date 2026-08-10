@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-08-10
+
+Patch release. Pre-alpha — flagged as a pre-release on GitHub.
+
+### Fixed
+- **Re-pick didn't update as picked in the budget.** When the user tapped
+  "Re-pick the total" and selected a number that the verifier disagreed
+  with (e.g. picked a subtotal when the verifier preferred the line
+  total), `renderVerifier()` overwrote the amount field with the
+  verifier's `recommendedTotal`. The receipt then saved with the
+  verifier's value, not the user's pick — so the budget never
+  reflected what the user actually marked.
+- **Save-time sanity check stomped on manual entries.** Once the user
+  re-picked a total and then typed a manual correction in the amount
+  field, `runSanityCheckBeforeSave()` ran `renderVerifier()` with
+  default-overwrite behavior, which clobbered the user's entry with
+  the sanity check's recommended total before saving. The receipt
+  was then persisted with the sanity check's value, not the typed
+  value.
+
+### Changed
+- `EditReceiptActivity.renderVerifier(picked, r, entered, autoPicked)`
+  gained two optional parameters (preserved as an overload so
+  existing call sites keep working): `overwriteAmount` (default true)
+  and `showToast` (default true). When `overwriteAmount=false` the
+  amount field is left untouched, so the verdict panel is purely
+  informational; when `showToast=false` the "Re-picked" confirmation
+  toast is suppressed.
+- The re-pick path now sets `etAmount = picked.value` and
+  `lastVerifiedTotal = picked.value`, so the budget prompt fires
+  with the user's number, not the verifier's adjusted value.
+- The save-time sanity check now calls
+  `renderVerifier(..., overwriteAmount=false, showToast=false)`. The
+  sanity check still runs and shows the existing
+  `"Sanity check: $X.XX ..."` toast; it just doesn't touch
+  `etAmount`. The receipt saves with whatever the user entered or
+  re-picked.
+
 ## [1.0.0] — 2026-08-09
 
 First tagged release. Pre-alpha — flagged as a pre-release on GitHub.

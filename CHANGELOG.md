@@ -4,49 +4,141 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-08-11
+
+Minor release. Pre-alpha — flagged as a pre-release on GitHub. New
+features (image quality gate, calibration, items-sum validation, test
+bank), a date-parse bug fix, and a large internal C-style refactor.
+No breaking changes for downstream callers.
+
 ### Added
-- **Handwriting OCR for visually-emphasised numbers.** `HandwritingOcr`
-  is a thin wrapper around `tesseract4android` 4.7 (LSTM). The
-  `ReceiptParser.extractAllNumbersWithVisualSignals` pipeline now, for
-  every number that the visual-signal detector flags as marked
-  (yellow highlighter or pen circle), asks Tesseract to re-recognise
-  the same bbox. If Tesseract finds a number, it lands in
-  `DetectedNumber.handwritingValue`; when both the visual signal AND
-  a handwriting value are present, `DetectedNumber.value` is set to
-  the Tesseract result (every downstream caller of `n.value` does the
-  right thing with no changes). This is exactly the "user wrote a
-  tip in pen, circled it" case that ML Kit's print-optimised Latin
-  recognizer gets wrong. The `eng.traineddata` file (~22 MB) is NOT
-  bundled in the repo — run `bash scripts/fetch_tesseract_eng.sh` to
-  fetch it. Without the file, the visual signals still work and the
-  pipeline falls back to ML Kit's number for marked bboxes.
-- **12th `isHandwritten` feature in the LinearLearner.** Boolean
-  feature: 1 if the value came from Tesseract re-OCR on a marked
-  bbox, 0 otherwise. The trained weights for the four emphasis
-  features (`highlightScore`, `circleScore`, plus the new
-  `isHandwritten`) are the strongest "this is the total" signal
-  the model has. Three new training examples
-  (`[0,0,0,0,1,0,0,0,0,0.7,0.0,1]`, `[0,0,0,1,1,0,0,0,0,0.0,0.6,1]`,
-  `[1,0,1,1,1,0,1,0,0,0.5,0.4,1]`) anchor the new feature at a
-  strongly positive weight.
-- **Verdict-panel line for handwriting.** When the picked number
-  has a Tesseract value AND a visual emphasis, the verdict panel
-  now shows `Handwritten — Tesseract re-recognised this bbox`
-  below the `Visually emphasised` line. Also reflected in the
-  auto-pick log as `[HANDWRITTEN — Tesseract re-recognised as $X.XX]`.
-- **Bank-API integration report.** `docs/decisions/0002-bank-api-integration.md`
-  is a decision doc comparing Plaid / Finicity / MX / Yodlee / Akoya
-  / Stripe Financial Connections on Android, with current 2026
-  pricing, a 16.5-day effort estimate broken into 6 phases, and a
-  recommendation to **defer the integration** until the app has
-  shipped and external users have hit the manual-entry friction
-  enough to justify the cost (server dependency, manifest's
-  `INTERNET` permission, real-money billing).
-- **`scripts/fetch_tesseract_eng.sh`** — one-liner to download the
-  Tesseract `eng.traineddata` into the right place, with `fast` and
-  `best` variants.
-- **`app/src/main/assets/tessdata/README.md`** — documents why the
-  traineddata isn't in the repo and how to add it.
+- **Image quality gate.** New `ocr/ImageQualityGate` runs four pre-OCR
+  checks (Laplacian-variance blur, mean-luma brightness, Sobel
+  gradient-tilt, long-edge size) on the captured photo before ML Kit
+  fires. The gate samples the bitmap down to 256×256 so the work is
+  ~20ms on a modern phone, shows a `"Photo quality is low (blurry,
+  tilted). The scan result may be inaccurate — consider retaking."`
+  toast when any check fails, and **never blocks** the user. Wired
+  into `ScanReceiptActivity.showCapturedAndOcr`. Pure-Java testable
+  variant (`assessLuminance(int[], int, int, int, int, int)`) so the
+  four checks are covered by `ImageQualityGateTest`.
+- **Temperature-scaling calibration in `LogisticRegression`.** New
+  `temperature` field on `Trained` and a `calibrate(model, heldOut)`
+  static method that does a grid search over T in [0.1, 10.0] in
+  steps of 0.05, minimising average log-loss. `predictProbability`
+  now applies `sigmoid(logit / T)`. The default of T=1.0 preserves
+  the existing uncalibrated behavior; the architecture is in place
+  for when held-out data arrives (either from a future
+  `"Was this right?"` user-correction affordance, or from a labelled
+  evaluation set). Calling `LogisticRegression.calibrate(PriceClassifier.getTrained(), heldOut)`
+  one-liners the calibration.
+- **Item-list sum validation in `TotalVerifier`.** Sums the line-item
+  prices on a receipt (numbers without a keyword, with two decimal
+  places, not matching any of subtotal/tax/tip) and includes
+  `items sum=$X.XX  (circled delta=$Y.YY, agrees|close|disagrees)`
+  in the `sanityCheck` text alongside the existing sub+tax+tip
+  message. The check fires only with 2+ line items (a single item
+  could trivially equal the total). Example output:
+  `sub+tax+tip=$19.99  (circled delta=$0.00); items sum=$18.49  (circled delta=$1.50, close)`.
+- **Unit test bank — 181 tests across 14 test classes, JUnit 5 + AssertJ.**
+  `app/src/test/java/` is new in this release. The test runner is
+  JUnit Platform (`testOptions { unitTests.all { it.useJUnitPlatform() } }`),
+  the assertion library is AssertJ 3.24.2, and a real
+  `org.json:json:20231013` ships on the test classpath so
+  `org.json.JSONObject` is functional (the Android jar ships only
+  stubs). Test JVM is pinned to UTC via
+  `jvmArgs '-Duser.timezone=UTC'` for deterministic date-formatting
+  tests. `returnDefaultValues = true` so Room annotations and
+  `android.graphics.Rect` references in our POJOs don't blow up at
+  test time. The bank covers:
+  - **OCR** — `ReceiptParserTest` (23), `DetectedNumberTest` (13),
+    `ParsedReceiptTest` (9), `MerchantClassifierTest` (11),
+    `ImageQualityGateTest` (7).
+  - **ML pipeline** — `LogisticRegressionTest` (14), `LinearLearnerTest` (14),
+    `PriceClassifierTest` (11), `TotalVerifierTest` (14), `MatchEngineTest` (13).
+  - **Data** — `ReceiptTest` (18), `BudgetTest` (10), `BankTransactionTest` (10).
+  - **Utility / export** — `MoneyUtilsTest` (6), `ReceiptExporterTest` (8).
+  Two previously-`@Disabled` tests for the `"5 Jan 2024"` /
+  `"Jan 5, 2024"` date formats are re-enabled (see Fixed below).
+- **`docs/improving-the-total-scanner.md`** — 50-idea report on
+  improving the OCR / classifier pipeline, with a top-5 priority
+  list. The shipped image quality gate, calibration, and items-sum
+  work are the first three of that list.
+- **Bank-API integration report** (carried over from `[Unreleased]`).
+  `docs/decisions/0002-bank-api-integration.md` compares Plaid /
+  Finicity / MX / Yodlee / Akoya / Stripe Financial Connections on
+  Android, with 2026 pricing, a 16.5-day effort estimate broken into
+  6 phases, and a recommendation to **defer the integration** until
+  the app has shipped and external users have hit the manual-entry
+  friction enough to justify the cost.
+- **`scripts/fetch_tesseract_eng.sh`** + `app/src/main/assets/tessdata/README.md`
+  (carried over from `[Unreleased]`). Placeholder infrastructure for
+  a future Tesseract re-OCR path. **Orphaned by this release** — see
+  Removed below.
+
+### Fixed
+- **`ReceiptParser.tryParseDate` parsed `"5 Jan 2024"` and `"Jan 5, 2024"`
+  as null.** The day/month assignments in the two `isMonthToken`
+  branches were swapped from what the comments claimed. For
+  pattern 4 (`day month-name year`, e.g. `5 Jan 2024`), the
+  `isMonthToken(secondGroup)` branch was parsing `firstGroup` (the
+  digit "5") as the month name and `secondGroup` (the month "Jan")
+  as the day via `Integer.parseInt`, which threw on the month token.
+  For pattern 5 (`month-name day, year`, e.g. `Jan 5, 2024`), the
+  `isMonthToken(firstGroup)` branch had the symmetric problem. Both
+  bugs were caught by the new `ReceiptParserTest` cases for
+  `"5 Jan 2024"` and `"Jan 5, 2024"`. Fix: swapped the day/month
+  assignments in each branch to match the comment.
+
+### Changed
+- **C-style final-at-top refactor across the entire main source tree**
+  (34 files). Every method body rewritten to declare all locals
+  as `final` at the top, assigned once, used as a pipeline. No more
+  mid-method re-assignments. Single-letter variable names (`r`, `b`,
+  `v`, `p`, `n`, `t`, `c`, `s`, `m`, `e`, `d`, `k`, etc.) replaced
+  with descriptive identifiers. Blank line between every statement.
+  No ternary operators anywhere (`if/else` and `switch` expressions
+  only). **No behavior change** — 181 tests passing before and after.
+- **Entity classes now fully immutable.** `Receipt`, `Budget`,
+  `BankTransaction`, `DetectedNumber`, `ParsedReceipt` — every
+  mutation goes through a `with*` copy method that returns a new
+  instance (or `this` when the value is unchanged, so the no-op case
+  is allocation-free). `id` is the only field without a `with*`
+  method; it is the primary key and never changes once assigned by
+  Room. Room `@Ignore` on `Budget`'s 2-arg convenience constructor
+  so Room uses the 6-arg canonical constructor at codegen time.
+- **`TotalVerifier` extracted 25+ named constants** (`TOL_STRICT`,
+  `TOL_TIGHT`, `TOL_LOOSE`, `PRICE_DELTA_TOLERANCE`, `SUBTOTAL_FLOOR`,
+  `LINE_ITEM_MIN`, `MIN_LINE_ITEMS_FOR_SUM`, `CONF_NO_COMPONENTS`,
+  `CONF_DELTA_STRICT`, `CONF_DELTA_TIGHT`, `CONF_DELTA_LOOSE`,
+  `CONF_DELTA_RATIO`, `CONF_DELTA_FLOOR`, `DELTA_RATIO_THRESHOLD`,
+  `ALT_PRESSURE_MARGIN`, `HIGH_CONFIDENCE_BUMP`, `DISAGREE_PENALTY_BASE`,
+  `MATCH_BOOST`, `ENSEMBLE_WEIGHT_*`, etc.) where there were magic
+  numbers. The monothlic `verify()` method was split into
+  `runStage1`, `runHeuristic`, `runStage2`, `runEnteredIfPresent`,
+  `buildSanityCheck`, `combineAndAdjust`, `decideRecommendation`,
+  `buildReasoning`, plus a separate `verifyEnsemble` method.
+- **`VisualSignalDetector` thresholds extracted into named constants**
+  (`HIGHLIGHT_R_MIN`, `HIGHLIGHT_G_MIN`, `HIGHLIGHT_B_MAX`,
+  `DARK_LUMINANCE_MAX`, `RING_MARGIN_FRACTION`, `ASPECT_MIN/MAX`,
+  `SMALL_BBOX_MAX_WIDTH/HEIGHT`, etc.).
+- **12 unused imports removed** across 6 files (`TotalVerifier`,
+  `LogisticRegression`, `LinearLearner`, `PriceClassifier`,
+  `EditReceiptActivity`, `ReceiptParser`).
+
+### Removed
+- **`ocr/HandwritingOcr.java`** — was a thin wrapper around
+  `tesseract4android` that called `recognizeFirstNumber` on a marked
+  bbox, but the result was discarded by every caller (the structured
+  OCR pipeline kept the ML Kit value). Dead code. The 12th
+  `isHandwritten` feature in `LinearLearner` (which existed only to
+  consume `DetectedNumber.handwritingValue`) was removed in the same
+  commit; `FEATURE_COUNT` is back to 11 and the synthetic training
+  set was updated to match. **Orphans**: the `tesseract4android` Gradle
+  dependency in `app/build.gradle`, the `scripts/fetch_tesseract_eng.sh`
+  helper, and `app/src/main/assets/tessdata/README.md` are all
+  unused by the current pipeline. A follow-up release will drop the
+  unused dependency.
 
 ## [1.0.1] — 2026-08-10
 

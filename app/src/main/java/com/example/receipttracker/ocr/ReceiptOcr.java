@@ -13,6 +13,7 @@ import androidx.annotation.Nullable;
 
 import com.example.receipttracker.log.Logger;
 
+
 import com.google.mlkit.vision.common.InputImage;
 
 import com.google.mlkit.vision.text.Text;
@@ -40,8 +41,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 
 /**
- * Thin synchronous wrapper around the ML Kit on-device text recognizer.
- * Safe to call from a worker thread.
+ * Thin synchronous wrapper around the ML Kit on-device text
+ * recognizer. Safe to call from a worker thread.
  *
  * <p>Two flavours:</p>
  * <ul>
@@ -56,25 +57,30 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class ReceiptOcr {
 
-    /**
-     * One OCR line, with its bounding box and a list of element-level
-     * bounding boxes (one per word/number/separator). The element
-     * boxes are what the visual-signal detector uses.
-     */
+    private static final String LOG_TAG = "OCR";
+    private static final long TIMEOUT_SECONDS = 20L;
+    private static final int SUCCESS_LINES_INITIAL = 0;
+    private static final int ROTATION_DEGREES = 0;
+
+
+    private static final TextRecognizer RECOGNIZER =
+            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+
+
+    private ReceiptOcr() {}
+
+
+    /** One OCR line, with its bounding box and per-element boxes. */
     public static final class OcrLine {
         @NonNull public final String text;
-
         @Nullable public final Rect bbox;
-
         /** Per-word boxes, in reading order. May be empty if ML Kit didn't emit elements. */
         @NonNull public final List<OcrElement> elements;
 
-
-        public OcrLine(@NonNull String text, @Nullable Rect bbox, @NonNull List<OcrElement> elements) {
+        public OcrLine(final @NonNull String text, final @Nullable Rect bbox,
+                       final @NonNull List<OcrElement> elements) {
             this.text = text;
-
             this.bbox = bbox;
-
             this.elements = elements;
         }
     }
@@ -83,42 +89,26 @@ public final class ReceiptOcr {
     /** One OCR element (roughly a word / number / symbol). */
     public static final class OcrElement {
         @NonNull public final String text;
-
         @Nullable public final Rect bbox;
 
-
-        public OcrElement(@NonNull String text, @Nullable Rect bbox) {
+        public OcrElement(final @NonNull String text, final @Nullable Rect bbox) {
             this.text = text;
-
             this.bbox = bbox;
         }
     }
 
 
-    private static final TextRecognizer RECOGNIZER =
-            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
-
-
-    private static final long TIMEOUT_SECONDS = 20;
-
-
-    private ReceiptOcr() {}
-
-
     /** Returns the full recognized text, or null on failure / timeout. */
     @Nullable
-    public static String recognizeText(@NonNull Bitmap bitmap) {
-        List<OcrLine> lines = recognizeWithBoxes(bitmap);
-
+    public static String recognizeText(final @NonNull Bitmap bitmap) {
+        final List<OcrLine> lines = recognizeWithBoxes(bitmap);
         if (lines == null) return null;
 
-        StringBuilder sb = new StringBuilder();
-
-        for (OcrLine l : lines) {
-            sb.append(l.text).append('\n');
+        final StringBuilder joined = new StringBuilder();
+        for (final OcrLine line : lines) {
+            joined.append(line.text).append('\n');
         }
-
-        return sb.toString();
+        return joined.toString();
     }
 
 
@@ -128,147 +118,99 @@ public final class ReceiptOcr {
      * element-level boxes. Returns null on failure / timeout.
      */
     @Nullable
-    public static List<OcrLine> recognizeWithBoxes(@NonNull Bitmap bitmap) {
-        long t0 = System.currentTimeMillis();
-
+    public static List<OcrLine> recognizeWithBoxes(final @NonNull Bitmap bitmap) {
+        final long startMillis = System.currentTimeMillis();
         Logger.section("OCR START");
-
-        Logger.i("OCR", "Input bitmap: " + bitmap.getWidth() + "x" + bitmap.getHeight()
+        Logger.i(LOG_TAG, "Input bitmap: " + bitmap.getWidth() + "x" + bitmap.getHeight()
                 + " config=" + bitmap.getConfig());
 
-        InputImage image = InputImage.fromBitmap(bitmap, 0);
-
-        AtomicReference<List<OcrLine>> result = new AtomicReference<>(null);
-
-        AtomicReference<Throwable> error = new AtomicReference<>(null);
-
-        AtomicReference<Integer> blockCount = new AtomicReference<>(0);
-
-        AtomicReference<Integer> lineCount = new AtomicReference<>(0);
-
-        CountDownLatch latch = new CountDownLatch(1);
-
+        final InputImage image = InputImage.fromBitmap(bitmap, ROTATION_DEGREES);
+        final AtomicReference<List<OcrLine>> resultHolder = new AtomicReference<>(null);
+        final AtomicReference<Throwable> errorHolder = new AtomicReference<>(null);
+        final AtomicReference<Integer> blockCountHolder = new AtomicReference<>(0);
+        final AtomicReference<Integer> lineCountHolder = new AtomicReference<>(SUCCESS_LINES_INITIAL);
+        final CountDownLatch latch = new CountDownLatch(1);
 
         RECOGNIZER.process(image)
                 .addOnSuccessListener(text -> {
-                    int blocks = text.getTextBlocks().size();
-
-                    int lines = 0;
-
-                    for (Text.TextBlock b : text.getTextBlocks()) lines += b.getLines().size();
-
-                    blockCount.set(blocks);
-
-                    lineCount.set(lines);
-
-                    result.set(structureText(text));
-
+                    final int blockCount = text.getTextBlocks().size();
+                    int lineCount = SUCCESS_LINES_INITIAL;
+                    for (final Text.TextBlock block : text.getTextBlocks()) {
+                        lineCount += block.getLines().size();
+                    }
+                    blockCountHolder.set(blockCount);
+                    lineCountHolder.set(lineCount);
+                    resultHolder.set(structureText(text));
                     latch.countDown();
                 })
-                .addOnFailureListener(e -> {
-                    error.set(e);
-
+                .addOnFailureListener(failure -> {
+                    errorHolder.set(failure);
                     latch.countDown();
                 });
 
-
-        try {
-            if (!latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                Logger.e("OCR", "Timeout after " + TIMEOUT_SECONDS + "s waiting for ML Kit");
-
-                Logger.section("OCR END (timeout)");
-
-                return null;
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-
-            Logger.w("OCR", "Interrupted while waiting for ML Kit");
-
-            Logger.section("OCR END (interrupted)");
-
+        if (!awaitLatch(latch)) {
             return null;
         }
-
-        if (error.get() != null) {
-            Logger.e("OCR", "ML Kit failed", error.get());
-
+        if (errorHolder.get() != null) {
+            Logger.e(LOG_TAG, "ML Kit failed", errorHolder.get());
             Logger.section("OCR END (failure)");
-
             return null;
         }
 
-        List<OcrLine> out = result.get();
-
-        long ms = System.currentTimeMillis() - t0;
-
-        int structuredLineCount;
-
-        if (out == null) {
-            structuredLineCount = 0;
+        final List<OcrLine> structured = resultHolder.get();
+        final long elapsedMillis = System.currentTimeMillis() - startMillis;
+        final int structuredCount;
+        if (structured == null) {
+            structuredCount = 0;
         } else {
-            structuredLineCount = out.size();
+            structuredCount = structured.size();
         }
-
-        Logger.i("OCR", "Recognized " + blockCount.get() + " blocks, "
-                + lineCount.get() + " lines, " + structuredLineCount
-                + " structured lines in " + ms + "ms");
-
+        Logger.i(LOG_TAG, "Recognized " + blockCountHolder.get() + " blocks, "
+                + lineCountHolder.get() + " lines, " + structuredCount
+                + " structured lines in " + elapsedMillis + "ms");
         Logger.section("OCR END");
-
-        return out;
+        return structured;
     }
 
 
-    private static List<OcrLine> structureText(Text text) {
-        // Sort blocks by Y first, same as the old flatten() did.
-        List<Text.TextBlock> blocks = new ArrayList<>(text.getTextBlocks());
+    private static boolean awaitLatch(CountDownLatch latch) {
+        try {
+            return latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            Logger.w(LOG_TAG, "Interrupted while waiting for ML Kit");
+            Logger.section("OCR END (interrupted)");
+            return false;
+        }
+    }
 
+
+    private static List<OcrLine> structureText(final Text text) {
+        // Sort blocks by Y first, same as the old flatten() did.
+        final List<Text.TextBlock> blocks = new ArrayList<>(text.getTextBlocks());
         Collections.sort(blocks, new Comparator<Text.TextBlock>() {
             @Override
             public int compare(Text.TextBlock a, Text.TextBlock b) {
-                Rect ra = a.getBoundingBox();
-
-                Rect rb = b.getBoundingBox();
-
-                int ya;
-
-                if (ra == null) {
-                    ya = 0;
-                } else {
-                    ya = ra.top;
-                }
-
-                int yb;
-
-                if (rb == null) {
-                    yb = 0;
-                } else {
-                    yb = rb.top;
-                }
-
-                return Integer.compare(ya, yb);
+                final Rect aBox = a.getBoundingBox();
+                final Rect bBox = b.getBoundingBox();
+                final int aTop = (aBox == null) ? 0 : aBox.top;
+                final int bTop = (bBox == null) ? 0 : bBox.top;
+                return Integer.compare(aTop, bTop);
             }
         });
 
-        List<OcrLine> out = new ArrayList<>();
-
-        for (Text.TextBlock block : blocks) {
-            for (Text.Line line : block.getLines()) {
-                String lineText = line.getText();
-
-                Rect lineBox = line.getBoundingBox();
-
-                List<OcrElement> elements = new ArrayList<>();
-
-                for (Text.Element el : line.getElements()) {
-                    elements.add(new OcrElement(el.getText(), el.getBoundingBox()));
+        final List<OcrLine> structured = new ArrayList<>();
+        for (final Text.TextBlock block : blocks) {
+            for (final Text.Line line : block.getLines()) {
+                final String lineText = line.getText();
+                final Rect lineBox = line.getBoundingBox();
+                final List<OcrElement> elements = new ArrayList<>();
+                for (final Text.Element element : line.getElements()) {
+                    elements.add(new OcrElement(element.getText(), element.getBoundingBox()));
                 }
-
-                out.add(new OcrLine(lineText, lineBox, elements));
+                structured.add(new OcrLine(lineText, lineBox, elements));
             }
         }
-
-        return out;
+        return structured;
     }
 }

@@ -46,350 +46,365 @@ import com.google.android.material.button.MaterialButton;
 
 import java.util.ArrayList;
 
+import java.util.HashMap;
+
 import java.util.List;
+
+import java.util.Map;
 
 import java.util.UUID;
 
 
+/**
+ * Three-section match screen: suggested pairings, unmatched bank
+ * transactions, and already-confirmed pairings. Tapping a suggestion
+ * locks in the match via {@link #confirmMatch}; the "Unlink" button on
+ * a confirmed row reverses it.
+ */
 public class MatchActivity extends AppCompatActivity {
 
-    private static final int TYPE_HEADER = 0;
+    private static final String TAG = "Match";
+    private static final String PLACEHOLDER_NO_MERCHANT = "(no merchant)";
+    private static final String SECTION_TITLE_FMT_PREFIX = "";
 
-    private static final int TYPE_SUGGEST = 1;
+    private static final int ROW_TYPE_HEADER = 0;
+    private static final int ROW_TYPE_SUGGEST = 1;
+    private static final int ROW_TYPE_MATCHED = 2;
+    private static final int ROW_TYPE_UNMATCHED_TX = 3;
 
-    private static final int TYPE_MATCHED = 2;
 
-    private static final int TYPE_UNMATCHED_TX = 3;
-
-
-    private RecyclerView rv;
-
+    private RecyclerView recyclerView;
     private MatchAdapter adapter;
-
-    private AppDatabase db;
-
-    private final AppExecutors exec = AppExecutors.get();
+    private AppDatabase database;
+    private final AppExecutors executors = AppExecutors.get();
 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         Logger.section("MATCH");
-
-        Logger.i("Match", "onCreate");
-
+        Logger.i(TAG, "onCreate");
         setContentView(R.layout.activity_match);
 
-        rv = findViewById(R.id.rv);
-
-        rv.setLayoutManager(new LinearLayoutManager(this));
-
+        recyclerView = findViewById(R.id.rv);
+        recyclerView.setLayoutManager(new LinearLayoutManager(this));
         adapter = new MatchAdapter();
-
-        rv.setAdapter(adapter);
-
-        db = AppDatabase.get(this);
+        recyclerView.setAdapter(adapter);
+        database = AppDatabase.get(this);
     }
 
 
     @Override
     protected void onResume() {
         super.onResume();
-
         reload();
     }
 
 
     private void reload() {
-        exec.diskIO().execute(() -> {
-            List<Receipt> unmatched = db.receiptDao().getUnmatched();
+        executors.diskIO().execute(() -> {
+            final List<Receipt> unmatchedReceipts = database.receiptDao().getUnmatched();
+            final List<Receipt> matchedReceipts = database.receiptDao().getMatched();
+            final List<BankTransaction> unmatchedTransactions = database.bankTransactionDao().getUnmatched();
+            final List<BankTransaction> matchedTransactions = database.bankTransactionDao().getMatched();
+            Logger.i(TAG, "reload: unmatchedReceipts=" + unmatchedReceipts.size()
+                    + " matchedReceipts=" + matchedReceipts.size()
+                    + " unmatchedTx=" + unmatchedTransactions.size()
+                    + " matchedTx=" + matchedTransactions.size());
 
-            List<Receipt> matched = db.receiptDao().getMatched();
-
-            List<BankTransaction> unmatchedTx = db.bankTransactionDao().getUnmatched();
-
-            List<BankTransaction> matchedTx = db.bankTransactionDao().getMatched();
-
-            Logger.i("Match", "reload: unmatchedReceipts=" + unmatched.size()
-                    + " matchedReceipts=" + matched.size()
-                    + " unmatchedTx=" + unmatchedTx.size()
-                    + " matchedTx=" + matchedTx.size());
-
-
-            List<MatchEngine.Suggestion> suggestions =
-                    MatchEngine.suggest(unmatched, unmatchedTx);
-
-            Logger.i("Match", "Engine produced " + suggestions.size() + " suggestions ("
+            final List<MatchEngine.Suggestion> suggestions =
+                    MatchEngine.suggest(unmatchedReceipts, unmatchedTransactions);
+            Logger.i(TAG, "Engine produced " + suggestions.size() + " suggestions ("
                     + suggestions.stream().filter(s -> s.best != null).count() + " with a candidate)");
 
+            final List<Object> rows = buildRows(unmatchedReceipts, matchedReceipts,
+                    unmatchedTransactions, matchedTransactions, suggestions);
 
-            // Pair up matched records by groupId
-            java.util.Map<String, Receipt> rByGroup = new java.util.HashMap<>();
-
-            for (Receipt r : matched) if (r.matchGroupId != null) rByGroup.put(r.matchGroupId, r);
-
-            java.util.Map<String, BankTransaction> tByGroup = new java.util.HashMap<>();
-
-            for (BankTransaction t : matchedTx) if (t.matchGroupId != null) tByGroup.put(t.matchGroupId, t);
-
-
-            List<Object> rows = new ArrayList<>();
-
-            rows.add(new Header(getString(R.string.match_section_unmatched_receipts, unmatched.size())));
-
-            if (unmatched.isEmpty()) {
-                rows.add(new Header("-"));
-            } else {
-                for (MatchEngine.Suggestion s : suggestions) {
-                    rows.add(new SuggestionRow(s.receipt, s.best));
-                }
-            }
-
-            rows.add(new Header(getString(R.string.match_section_unmatched_tx, unmatchedTx.size())));
-
-            if (unmatchedTx.isEmpty()) {
-                rows.add(new Header("-"));
-            } else {
-                for (BankTransaction t : unmatchedTx) rows.add(new UnmatchedTxRow(t));
-            }
-
-            rows.add(new Header(getString(R.string.match_section_matched, matched.size())));
-
-            if (matched.isEmpty()) {
-                rows.add(new Header("-"));
-            } else {
-                for (java.util.Map.Entry<String, Receipt> e : rByGroup.entrySet()) {
-                    BankTransaction t = tByGroup.get(e.getKey());
-
-                    if (t != null) rows.add(new MatchedRow(e.getValue(), t));
-                }
-            }
-
-
-            List<Object> finalRows = rows;
-
-            exec.mainThread().execute(() -> adapter.setRows(finalRows));
+            executors.mainThread().execute(() -> adapter.setRows(rows));
         });
+    }
+
+
+    private List<Object> buildRows(List<Receipt> unmatchedReceipts, List<Receipt> matchedReceipts,
+                                   List<BankTransaction> unmatchedTransactions,
+                                   List<BankTransaction> matchedTransactions,
+                                   List<MatchEngine.Suggestion> suggestions) {
+        final Map<String, Receipt> receiptsByGroup = new HashMap<>();
+        for (final Receipt receipt : matchedReceipts) {
+            if (receipt.matchGroupId != null) {
+                receiptsByGroup.put(receipt.matchGroupId, receipt);
+            }
+        }
+        final Map<String, BankTransaction> transactionsByGroup = new HashMap<>();
+        for (final BankTransaction transaction : matchedTransactions) {
+            if (transaction.matchGroupId != null) {
+                transactionsByGroup.put(transaction.matchGroupId, transaction);
+            }
+        }
+
+        final List<Object> rows = new ArrayList<>();
+        rows.add(new Header(getString(R.string.match_section_unmatched_receipts, unmatchedReceipts.size())));
+        appendUnmatchedReceiptRows(rows, suggestions);
+        rows.add(new Header(getString(R.string.match_section_unmatched_tx, unmatchedTransactions.size())));
+        appendUnmatchedTransactionRows(rows, unmatchedTransactions);
+        rows.add(new Header(getString(R.string.match_section_matched, matchedReceipts.size())));
+        appendMatchedRows(rows, receiptsByGroup, transactionsByGroup);
+        return rows;
+    }
+
+
+    private void appendUnmatchedReceiptRows(List<Object> rows, List<MatchEngine.Suggestion> suggestions) {
+        if (suggestions.isEmpty()) {
+            rows.add(new Header("-"));
+            return;
+        }
+        for (final MatchEngine.Suggestion suggestion : suggestions) {
+            rows.add(new SuggestionRow(suggestion.receipt, suggestion.best));
+        }
+    }
+
+
+    private void appendUnmatchedTransactionRows(List<Object> rows, List<BankTransaction> unmatchedTransactions) {
+        if (unmatchedTransactions.isEmpty()) {
+            rows.add(new Header("-"));
+            return;
+        }
+        for (final BankTransaction transaction : unmatchedTransactions) {
+            rows.add(new UnmatchedTxRow(transaction));
+        }
+    }
+
+
+    private void appendMatchedRows(List<Object> rows,
+                                    Map<String, Receipt> receiptsByGroup,
+                                    Map<String, BankTransaction> transactionsByGroup) {
+        if (receiptsByGroup.isEmpty()) {
+            rows.add(new Header("-"));
+            return;
+        }
+        for (final Map.Entry<String, Receipt> entry : receiptsByGroup.entrySet()) {
+            final BankTransaction partner = transactionsByGroup.get(entry.getKey());
+            if (partner != null) {
+                rows.add(new MatchedRow(entry.getValue(), partner));
+            }
+        }
     }
 
 
     // --- Row model ---
 
-    static class Header { final String text; Header(String t) { this.text = t; } }
-
-    static class SuggestionRow {
-        final Receipt r; @Nullable final BankTransaction t;
-
-        SuggestionRow(Receipt r, @Nullable BankTransaction t) { this.r = r; this.t = t; }
+    static final class Header {
+        final String text;
+        Header(String text) { this.text = text; }
     }
 
-    static class UnmatchedTxRow { final BankTransaction t; UnmatchedTxRow(BankTransaction t) { this.t = t; } }
+    static final class SuggestionRow {
+        final Receipt receipt;
+        @Nullable final BankTransaction transaction;
+        SuggestionRow(Receipt receipt, @Nullable BankTransaction transaction) {
+            this.receipt = receipt;
+            this.transaction = transaction;
+        }
+    }
 
-    static class MatchedRow { final Receipt r; final BankTransaction t; MatchedRow(Receipt r, BankTransaction t) { this.r = r; this.t = t; } }
+    static final class UnmatchedTxRow {
+        final BankTransaction transaction;
+        UnmatchedTxRow(BankTransaction transaction) { this.transaction = transaction; }
+    }
+
+    static final class MatchedRow {
+        final Receipt receipt;
+        final BankTransaction transaction;
+        MatchedRow(Receipt receipt, BankTransaction transaction) {
+            this.receipt = receipt;
+            this.transaction = transaction;
+        }
+    }
 
 
     // --- Adapter ---
 
     class MatchAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+
+        // MUTABLE: re-set in setRows().
         private List<Object> rows = new ArrayList<>();
 
 
-        void setRows(List<Object> r) { this.rows = r; notifyDataSetChanged(); }
+        void setRows(List<Object> newRows) {
+            this.rows = newRows;
+            notifyDataSetChanged();
+        }
 
 
         @Override
         public int getItemViewType(int position) {
-            Object o = rows.get(position);
-
-            if (o instanceof Header) return TYPE_HEADER;
-
-            if (o instanceof SuggestionRow) return TYPE_SUGGEST;
-
-            if (o instanceof MatchedRow) return TYPE_MATCHED;
-
-            if (o instanceof UnmatchedTxRow) return TYPE_UNMATCHED_TX;
-
-            return TYPE_HEADER;
+            final Object row = rows.get(position);
+            if (row instanceof Header) return ROW_TYPE_HEADER;
+            if (row instanceof SuggestionRow) return ROW_TYPE_SUGGEST;
+            if (row instanceof MatchedRow) return ROW_TYPE_MATCHED;
+            if (row instanceof UnmatchedTxRow) return ROW_TYPE_UNMATCHED_TX;
+            return ROW_TYPE_HEADER;
         }
 
 
-        @NonNull @Override
+        @NonNull
+        @Override
         public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            LayoutInflater inf = LayoutInflater.from(parent.getContext());
-
-            if (viewType == TYPE_HEADER) {
-                return new HeaderVH(inf.inflate(R.layout.item_match_header, parent, false));
+            final LayoutInflater inflater = LayoutInflater.from(parent.getContext());
+            if (viewType == ROW_TYPE_HEADER) {
+                return new HeaderHolder(inflater.inflate(R.layout.item_match_header, parent, false));
             }
-
-            if (viewType == TYPE_SUGGEST) {
-                return new SuggestVH(inf.inflate(R.layout.item_match_suggestion, parent, false));
+            if (viewType == ROW_TYPE_SUGGEST) {
+                return new SuggestHolder(inflater.inflate(R.layout.item_match_suggestion, parent, false));
             }
-
-            if (viewType == TYPE_UNMATCHED_TX) {
-                return new SuggestVH(inf.inflate(R.layout.item_match_suggestion, parent, false));
+            if (viewType == ROW_TYPE_UNMATCHED_TX) {
+                // Reuse the suggestion layout for unmatched transactions too.
+                return new SuggestHolder(inflater.inflate(R.layout.item_match_suggestion, parent, false));
             }
-
-            return new MatchedVH(inf.inflate(R.layout.item_match_matched, parent, false));
+            return new MatchedHolder(inflater.inflate(R.layout.item_match_matched, parent, false));
         }
 
 
         @Override
         public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
-            Object o = rows.get(position);
+            final Object row = rows.get(position);
 
-            if (holder instanceof HeaderVH) {
-                ((HeaderVH) holder).tv.setText(((Header) o).text);
-            } else if (holder instanceof SuggestVH) {
-                SuggestVH vh = (SuggestVH) holder;
+            if (holder instanceof HeaderHolder) {
+                ((HeaderHolder) holder).titleView.setText(((Header) row).text);
+                return;
+            }
+            if (holder instanceof SuggestHolder) {
+                bindSuggestHolder((SuggestHolder) holder, row);
+                return;
+            }
+            if (holder instanceof MatchedHolder) {
+                bindMatchedHolder((MatchedHolder) holder, (MatchedRow) row);
+            }
+        }
 
-                if (o instanceof SuggestionRow) {
-                    SuggestionRow s = (SuggestionRow) o;
 
-                    String sMerchant;
-
-                    if (s.r.merchant == null) {
-                        sMerchant = "(no merchant)";
-                    } else {
-                        sMerchant = s.r.merchant;
-                    }
-
-                    vh.left.setText(sMerchant);
-
-                    vh.leftAmount.setText(MoneyUtils.format(s.r.amount));
-
-                    if (s.t != null) {
-                        vh.right.setText(s.t.description + " - " + MoneyUtils.formatDate(s.t.dateMillis));
-
-                        vh.rightAmount.setText(MoneyUtils.format(s.t.amount));
-
-                        vh.itemView.setOnClickListener(view -> confirmMatch(s.r, s.t));
-                    } else {
-                        vh.right.setText(R.string.match_no_suggestion);
-
-                        vh.rightAmount.setText("");
-
-                        vh.itemView.setOnClickListener(null);
-
-                        vh.itemView.setClickable(false);
-                    }
-                } else if (o instanceof UnmatchedTxRow) {
-                    UnmatchedTxRow u = (UnmatchedTxRow) o;
-
-                    vh.left.setText(u.t.description);
-
-                    vh.leftAmount.setText(MoneyUtils.format(u.t.amount));
-
-                    vh.right.setText(MoneyUtils.formatDate(u.t.dateMillis));
-
-                    vh.rightAmount.setText("");
-
-                    vh.itemView.setOnClickListener(null);
-
-                    vh.itemView.setClickable(false);
-                }
-            } else if (holder instanceof MatchedVH) {
-                MatchedRow m = (MatchedRow) o;
-
-                MatchedVH vh = (MatchedVH) holder;
-
-                String mMerchant;
-
-                if (m.r.merchant == null) {
-                    mMerchant = "(no merchant)";
+        private void bindSuggestHolder(SuggestHolder holder, Object row) {
+            if (row instanceof SuggestionRow) {
+                final SuggestionRow suggestion = (SuggestionRow) row;
+                final String merchantLabel;
+                if (suggestion.receipt.merchant == null) {
+                    merchantLabel = PLACEHOLDER_NO_MERCHANT;
                 } else {
-                    mMerchant = m.r.merchant;
+                    merchantLabel = suggestion.receipt.merchant;
                 }
-
-                vh.left.setText(mMerchant);
-
-                vh.leftAmount.setText(MoneyUtils.format(m.r.amount));
-
-                vh.right.setText(m.t.description + " - " + MoneyUtils.formatDate(m.t.dateMillis)
-                        + " - " + MoneyUtils.format(m.t.amount));
-
-                vh.unlink.setOnClickListener(view -> unlink(m.r, m.t));
+                holder.leftView.setText(merchantLabel);
+                holder.leftAmountView.setText(MoneyUtils.format(suggestion.receipt.amount));
+                if (suggestion.transaction != null) {
+                    final String rightText = suggestion.transaction.description
+                            + " - " + MoneyUtils.formatDate(suggestion.transaction.dateMillis);
+                    holder.rightView.setText(rightText);
+                    holder.rightAmountView.setText(MoneyUtils.format(suggestion.transaction.amount));
+                    holder.itemView.setOnClickListener(clickedView -> confirmMatch(suggestion.receipt, suggestion.transaction));
+                } else {
+                    holder.rightView.setText(R.string.match_no_suggestion);
+                    holder.rightAmountView.setText("");
+                    holder.itemView.setOnClickListener(null);
+                    holder.itemView.setClickable(false);
+                }
+            } else if (row instanceof UnmatchedTxRow) {
+                final UnmatchedTxRow unmatched = (UnmatchedTxRow) row;
+                holder.leftView.setText(unmatched.transaction.description);
+                holder.leftAmountView.setText(MoneyUtils.format(unmatched.transaction.amount));
+                holder.rightView.setText(MoneyUtils.formatDate(unmatched.transaction.dateMillis));
+                holder.rightAmountView.setText("");
+                holder.itemView.setOnClickListener(null);
+                holder.itemView.setClickable(false);
             }
         }
 
 
-        @Override public int getItemCount() { return rows.size(); }
-
-
-        class HeaderVH extends RecyclerView.ViewHolder {
-            final TextView tv;
-
-            HeaderVH(View v) { super(v); tv = (TextView) v; }
+        private void bindMatchedHolder(MatchedHolder holder, MatchedRow matched) {
+            final String merchantLabel;
+            if (matched.receipt.merchant == null) {
+                merchantLabel = PLACEHOLDER_NO_MERCHANT;
+            } else {
+                merchantLabel = matched.receipt.merchant;
+            }
+            holder.leftView.setText(merchantLabel);
+            holder.leftAmountView.setText(MoneyUtils.format(matched.receipt.amount));
+            final String rightText = matched.transaction.description
+                    + " - " + MoneyUtils.formatDate(matched.transaction.dateMillis)
+                    + " - " + MoneyUtils.format(matched.transaction.amount);
+            holder.rightView.setText(rightText);
+            holder.unlinkButton.setOnClickListener(clickedView -> unlink(matched.receipt, matched.transaction));
         }
 
-        class SuggestVH extends RecyclerView.ViewHolder {
-            final TextView left, leftAmount, right, rightAmount;
 
-            SuggestVH(View v) {
-                super(v);
+        @Override
+        public int getItemCount() {
+            return rows.size();
+        }
 
-                left = v.findViewById(R.id.tv_left);
 
-                leftAmount = v.findViewById(R.id.tv_left_amount);
-
-                right = v.findViewById(R.id.tv_right);
-
-                rightAmount = v.findViewById(R.id.tv_right_amount);
+        class HeaderHolder extends RecyclerView.ViewHolder {
+            final TextView titleView;
+            HeaderHolder(View itemView) {
+                super(itemView);
+                titleView = (TextView) itemView;
             }
         }
 
-        class MatchedVH extends RecyclerView.ViewHolder {
-            final TextView left, leftAmount, right;
+        class SuggestHolder extends RecyclerView.ViewHolder {
+            final TextView leftView;
+            final TextView leftAmountView;
+            final TextView rightView;
+            final TextView rightAmountView;
 
-            final MaterialButton unlink;
+            SuggestHolder(View itemView) {
+                super(itemView);
+                leftView = itemView.findViewById(R.id.tv_left);
+                leftAmountView = itemView.findViewById(R.id.tv_left_amount);
+                rightView = itemView.findViewById(R.id.tv_right);
+                rightAmountView = itemView.findViewById(R.id.tv_right_amount);
+            }
+        }
 
-            MatchedVH(View v) {
-                super(v);
+        class MatchedHolder extends RecyclerView.ViewHolder {
+            final TextView leftView;
+            final TextView leftAmountView;
+            final TextView rightView;
+            final MaterialButton unlinkButton;
 
-                left = v.findViewById(R.id.tv_left);
-
-                leftAmount = v.findViewById(R.id.tv_left_amount);
-
-                right = v.findViewById(R.id.tv_right);
-
-                unlink = v.findViewById(R.id.btn_unlink);
+            MatchedHolder(View itemView) {
+                super(itemView);
+                leftView = itemView.findViewById(R.id.tv_left);
+                leftAmountView = itemView.findViewById(R.id.tv_left_amount);
+                rightView = itemView.findViewById(R.id.tv_right);
+                unlinkButton = itemView.findViewById(R.id.btn_unlink);
             }
         }
     }
 
 
-    private void confirmMatch(Receipt r, BankTransaction t) {
-        String groupId = UUID.randomUUID().toString();
-
-        Logger.i("Match", "confirmMatch: receipt=" + r.id + " (" + r.merchant
-                + " $" + r.amount + ") <- tx=" + t.id + " (" + t.description
-                + " $" + t.amount + ") groupId=" + groupId);
-
-        exec.diskIO().execute(() -> {
-            db.receiptDao().setMatchGroup(r.id, groupId);
-
-            db.bankTransactionDao().setMatchGroup(t.id, groupId);
-
-            exec.mainThread().execute(() -> {
-                Toast.makeText(MatchActivity.this, "Matched", Toast.LENGTH_SHORT).show();
-
+    private void confirmMatch(Receipt receipt, BankTransaction transaction) {
+        final String groupId = UUID.randomUUID().toString();
+        Logger.i(TAG, "confirmMatch: receipt=" + receipt.id + " (" + receipt.merchant
+                + " $" + receipt.amount + ") <- tx=" + transaction.id
+                + " (" + transaction.description + " $" + transaction.amount
+                + ") groupId=" + groupId);
+        executors.diskIO().execute(() -> {
+            database.receiptDao().setMatchGroup(receipt.id, groupId);
+            database.bankTransactionDao().setMatchGroup(transaction.id, groupId);
+            executors.mainThread().execute(() -> {
+                Toast.makeText(this, "Matched", Toast.LENGTH_SHORT).show();
                 reload();
             });
         });
     }
 
 
-    private void unlink(Receipt r, BankTransaction t) {
-        Logger.i("Match", "unlink: receipt=" + r.id + " tx=" + t.id);
-
-        exec.diskIO().execute(() -> {
-            db.receiptDao().clearMatchGroup(r.id);
-
-            db.bankTransactionDao().clearMatchGroup(t.id);
-
-            exec.mainThread().execute(() -> {
-                Toast.makeText(MatchActivity.this, "Unmatched", Toast.LENGTH_SHORT).show();
-
+    private void unlink(Receipt receipt, BankTransaction transaction) {
+        Logger.i(TAG, "unlink: receipt=" + receipt.id + " tx=" + transaction.id);
+        executors.diskIO().execute(() -> {
+            database.receiptDao().clearMatchGroup(receipt.id);
+            database.bankTransactionDao().clearMatchGroup(transaction.id);
+            executors.mainThread().execute(() -> {
+                Toast.makeText(this, "Unmatched", Toast.LENGTH_SHORT).show();
                 reload();
             });
         });

@@ -59,101 +59,94 @@ import java.util.Collections;
 import java.util.List;
 
 
+/**
+ * Lists receipts. Two modes: "active" (default) shows non-deleted
+ * receipts newest-first; toggling "Show deleted" in the menu flips
+ * to a soft-deleted view with restore / delete-forever options.
+ */
 public class ReceiptListActivity extends AppCompatActivity {
 
     private static final String TAG = "ReceiptList";
 
-    private static final int MENU_SHOW_DELETED = 1;
-
+    private static final int MENU_TOGGLE_SHOW_DELETED = 1;
     private static final int MENU_CLEAR_ALL = 2;
-
     private static final int MENU_RESTORE_ALL = 3;
+    private static final int THUMBNAIL_DIM = 256;
+
+    private static final String LABEL_SHOW_DELETED = "Show deleted";
+    private static final String LABEL_HIDE_DELETED = "Hide deleted";
+    private static final String LABEL_RESTORE_ALL = "Restore all";
+    private static final String LABEL_CLEAR_ALL = "Clear all";
+    private static final String STATUS_DELETED = "DELETED";
+    private static final String PLACEHOLDER_NO_MERCHANT = "(no merchant)";
+    private static final String CLEARED_TOAST = "All receipts cleared from view";
 
 
-    private RecyclerView rv;
-
-    private View tvEmpty;
-
+    private RecyclerView recyclerView;
+    private View emptyView;
     private ReceiptAdapter adapter;
-
     private ReceiptDao dao;
+    private final AppExecutors executors = AppExecutors.get();
 
-    private final AppExecutors exec = AppExecutors.get();
-
+    // MUTABLE: toggled in menu.
     private boolean showDeleted = false;
 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         Logger.i(TAG, "onCreate");
-
         setContentView(R.layout.activity_receipt_list);
 
-        rv = findViewById(R.id.rv);
-
-        tvEmpty = findViewById(R.id.tv_empty);
-
-        rv.setLayoutManager(new LinearLayoutManager(this));
-
+        recyclerView = findViewById(R.id.rv);
+        emptyView = findViewById(R.id.tv_empty);
+        recyclerView.setLayoutManager(new LinearLayoutManager(this));
         adapter = new ReceiptAdapter();
-
-        rv.setAdapter(adapter);
-
+        recyclerView.setAdapter(adapter);
         dao = AppDatabase.get(this).receiptDao();
 
-        // The user can toggle "show deleted" via the menu. In both modes
-        // we re-observe the right query and let the adapter show the right
-        // empty state.
+        // The user can toggle "show deleted" via the menu. In both
+        // modes we re-observe the right query and let the adapter show
+        // the right empty state.
         observeCurrent();
     }
 
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
-        String showDeletedLabel;
-
+        final String toggleLabel;
         if (showDeleted) {
-            showDeletedLabel = "Hide deleted";
+            toggleLabel = LABEL_HIDE_DELETED;
         } else {
-            showDeletedLabel = "Show deleted";
+            toggleLabel = LABEL_SHOW_DELETED;
         }
-
-        menu.add(0, MENU_SHOW_DELETED, 0, showDeletedLabel);
-
+        menu.add(0, MENU_TOGGLE_SHOW_DELETED, 0, toggleLabel);
         if (showDeleted) {
-            menu.add(0, MENU_RESTORE_ALL, 1, "Restore all");
+            menu.add(0, MENU_RESTORE_ALL, 1, LABEL_RESTORE_ALL);
         } else {
-            menu.add(0, MENU_CLEAR_ALL, 1, "Clear all");
+            menu.add(0, MENU_CLEAR_ALL, 1, LABEL_CLEAR_ALL);
         }
-
         return true;
     }
 
 
     @Override
     public boolean onOptionsItemSelected(@NonNull MenuItem item) {
-        int id = item.getItemId();
-
-        if (id == MENU_SHOW_DELETED) {
+        final int itemId = item.getItemId();
+        if (itemId == MENU_TOGGLE_SHOW_DELETED) {
             showDeleted = !showDeleted;
-
             invalidateOptionsMenu();
-
             observeCurrent();
-
-            return true;
-        } else if (id == MENU_CLEAR_ALL) {
-            confirmClearAll();
-
-            return true;
-        } else if (id == MENU_RESTORE_ALL) {
-            confirmRestoreAll();
-
             return true;
         }
-
+        if (itemId == MENU_CLEAR_ALL) {
+            confirmClearAll();
+            return true;
+        }
+        if (itemId == MENU_RESTORE_ALL) {
+            confirmRestoreAll();
+            return true;
+        }
         return super.onOptionsItemSelected(item);
     }
 
@@ -162,9 +155,7 @@ public class ReceiptListActivity extends AppCompatActivity {
         // Always re-observe from a fresh LiveData. Room gives us a new
         // LiveData instance per call, so removeObservers first.
         dao.getAllActiveLive().removeObservers(this);
-
         dao.getAllLive().removeObservers(this);
-
         if (showDeleted) {
             dao.getAllLive().observe(this, this::render);
         } else {
@@ -173,43 +164,35 @@ public class ReceiptListActivity extends AppCompatActivity {
     }
 
 
-    private void render(List<Receipt> data) {
-        int n;
-
-        if (data == null) {
-            n = 0;
+    private void render(List<Receipt> receipts) {
+        final int count;
+        if (receipts == null) {
+            count = 0;
         } else {
-            n = data.size();
+            count = receipts.size();
         }
-
-        Logger.i(TAG, "render: " + n + " receipts (showDeleted=" + showDeleted + ")");
-
-        adapter.set(data);
-
-        boolean empty = data == null || data.isEmpty();
-
-        if (empty) {
-            tvEmpty.setVisibility(View.VISIBLE);
+        Logger.i(TAG, "render: " + count + " receipts (showDeleted=" + showDeleted + ")");
+        adapter.set(receipts);
+        final boolean isEmpty = receipts == null || receipts.isEmpty();
+        if (isEmpty) {
+            emptyView.setVisibility(View.VISIBLE);
         } else {
-            tvEmpty.setVisibility(View.GONE);
+            emptyView.setVisibility(View.GONE);
         }
-
-        if (empty) {
-            rv.setVisibility(View.GONE);
+        if (isEmpty) {
+            recyclerView.setVisibility(View.GONE);
         } else {
-            rv.setVisibility(View.VISIBLE);
+            recyclerView.setVisibility(View.VISIBLE);
         }
     }
 
 
     private void confirmClearAll() {
-        exec.diskIO().execute(() -> {
-            int n = dao.softDeleteAll(System.currentTimeMillis());
-
-            Logger.i(TAG, "softDeleteAll -> " + n);
+        executors.diskIO().execute(() -> {
+            final int clearedCount = dao.softDeleteAll(System.currentTimeMillis());
+            Logger.i(TAG, "softDeleteAll -> " + clearedCount);
         });
-
-        Toast.makeText(this, "All receipts cleared from view", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, CLEARED_TOAST, Toast.LENGTH_SHORT).show();
     }
 
 
@@ -218,11 +201,10 @@ public class ReceiptListActivity extends AppCompatActivity {
                 .setTitle("Restore all deleted receipts?")
                 .setMessage("This brings every cleared receipt back into the main list.")
                 .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton("Restore", (d, w) -> {
-                    exec.diskIO().execute(() -> {
-                        int n = dao.restoreAll();
-
-                        Logger.i(TAG, "restoreAll -> " + n);
+                .setPositiveButton("Restore", (dialogInterface, which) -> {
+                    executors.diskIO().execute(() -> {
+                        final int restoredCount = dao.restoreAll();
+                        Logger.i(TAG, "restoreAll -> " + restoredCount);
                     });
                 })
                 .show();
@@ -231,166 +213,181 @@ public class ReceiptListActivity extends AppCompatActivity {
 
     // ============ adapter ============
 
-    class ReceiptAdapter extends RecyclerView.Adapter<ReceiptAdapter.VH> {
+    class ReceiptAdapter extends RecyclerView.Adapter<ReceiptAdapter.ReceiptViewHolder> {
+
+        // MUTABLE: re-set in set().
         private List<Receipt> data = Collections.emptyList();
 
 
-        void set(List<Receipt> d) {
-            if (d == null) {
+        void set(List<Receipt> newData) {
+            if (newData == null) {
                 this.data = Collections.emptyList();
             } else {
-                this.data = d;
+                this.data = newData;
             }
-
             notifyDataSetChanged();
         }
 
 
-        @NonNull @Override
-        public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            View v = LayoutInflater.from(parent.getContext())
+        @NonNull
+        @Override
+        public ReceiptViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            final View itemView = LayoutInflater.from(parent.getContext())
                     .inflate(R.layout.item_receipt, parent, false);
-
-            return new VH(v);
+            return new ReceiptViewHolder(itemView);
         }
 
 
         @Override
-        public void onBindViewHolder(@NonNull VH h, int position) {
-            Receipt r = data.get(position);
+        public void onBindViewHolder(@NonNull ReceiptViewHolder holder, int position) {
+            final Receipt receipt = data.get(position);
 
-            String merchantText;
-
-            if (r.merchant == null) {
-                merchantText = "(no merchant)";
+            final String merchantLabel;
+            if (receipt.merchant == null) {
+                merchantLabel = PLACEHOLDER_NO_MERCHANT;
             } else {
-                merchantText = r.merchant;
+                merchantLabel = receipt.merchant;
+            }
+            holder.merchant.setText(merchantLabel);
+            holder.date.setText(MoneyUtils.formatDate(receipt.dateMillis));
+            holder.amount.setText(MoneyUtils.format(receipt.amount));
+
+            final boolean isDeleted = receipt.deletedAt != null;
+            if (isDeleted) {
+                bindDeletedRow(holder, receipt);
+            } else if (receipt.matchGroupId != null) {
+                bindMatchedRow(holder, receipt);
+            } else {
+                bindUnmatchedRow(holder, receipt);
             }
 
-            h.merchant.setText(merchantText);
+            bindThumbnail(holder, receipt);
+            bindRowClick(holder, receipt, isDeleted);
+        }
 
-            h.date.setText(MoneyUtils.formatDate(r.dateMillis));
 
-            h.amount.setText(MoneyUtils.format(r.amount));
+        private void bindDeletedRow(ReceiptViewHolder holder, Receipt receipt) {
+            holder.status.setText(STATUS_DELETED);
+            holder.status.setBackgroundResource(R.drawable.bg_chip_warning);
+            holder.status.setTextColor(getColor(R.color.on_warning_container));
+            holder.merchant.setAlpha(0.5f);
+            holder.amount.setAlpha(0.5f);
+        }
 
-            boolean deleted = r.deletedAt != null;
 
-            if (deleted) {
-                h.status.setText("DELETED");
+        private void bindMatchedRow(ReceiptViewHolder holder, Receipt receipt) {
+            holder.status.setText(R.string.receipt_match_status_matched);
+            holder.status.setBackgroundResource(R.drawable.bg_chip_success);
+            holder.status.setTextColor(getColor(R.color.on_success_container));
+            holder.merchant.setAlpha(1f);
+            holder.amount.setAlpha(1f);
+        }
 
-                h.status.setBackgroundResource(R.drawable.bg_chip_warning);
 
-                h.status.setTextColor(getColor(R.color.on_warning_container));
+        private void bindUnmatchedRow(ReceiptViewHolder holder, Receipt receipt) {
+            holder.status.setText(R.string.receipt_match_status_unmatched);
+            holder.status.setBackgroundResource(R.drawable.bg_chip_primary);
+            holder.status.setTextColor(getColor(R.color.on_primary_container));
+            holder.merchant.setAlpha(1f);
+            holder.amount.setAlpha(1f);
+        }
 
-                h.merchant.setAlpha(0.5f);
 
-                h.amount.setAlpha(0.5f);
-            } else if (r.matchGroupId != null) {
-                h.status.setText(R.string.receipt_match_status_matched);
-
-                h.status.setBackgroundResource(R.drawable.bg_chip_success);
-
-                h.status.setTextColor(getColor(R.color.on_success_container));
-
-                h.merchant.setAlpha(1f);
-
-                h.amount.setAlpha(1f);
-            } else {
-                h.status.setText(R.string.receipt_match_status_unmatched);
-
-                h.status.setBackgroundResource(R.drawable.bg_chip_primary);
-
-                h.status.setTextColor(getColor(R.color.on_primary_container));
-
-                h.merchant.setAlpha(1f);
-
-                h.amount.setAlpha(1f);
-            }
-
-            if (r.photoPath != null && new File(r.photoPath).exists()) {
-                Bitmap bmp = ReceiptImageStore.decodeSampled(r.photoPath, 256, 256);
-
-                if (bmp != null) h.thumb.setImageBitmap(bmp);
-                else h.thumb.setImageDrawable(null);
-            } else {
-                h.thumb.setImageDrawable(null);
-            }
-
-            h.itemView.setOnClickListener(v -> {
-                if (deleted) {
-                    // Offer restore instead of opening the editor on a deleted row.
-                    String restoreMerchant;
-
-                    if (r.merchant == null) {
-                        restoreMerchant = "(no merchant)";
-                    } else {
-                        restoreMerchant = r.merchant;
-                    }
-
-                    new AlertDialog.Builder(ReceiptListActivity.this)
-                            .setTitle("Restore receipt?")
-                            .setMessage("Bring '" + restoreMerchant
-                                    + "' back to the active list?")
-                            .setNegativeButton(android.R.string.cancel, null)
-                            .setPositiveButton("Restore", (d, w) -> {
-                                exec.diskIO().execute(() -> {
-                                    dao.restore(r.id);
-
-                                    Logger.i(TAG, "restored receipt id=" + r.id);
-                                });
-                            })
-                            .setNeutralButton("Delete forever", (d, w) -> {
-                                new AlertDialog.Builder(ReceiptListActivity.this)
-                                        .setTitle("Delete forever?")
-                                        .setMessage("This will permanently remove the receipt and its photo.")
-                                        .setNegativeButton(android.R.string.cancel, null)
-                                        .setPositiveButton("Delete", (d2, w2) -> {
-                                            exec.diskIO().execute(() -> {
-                                                if (r.photoPath != null) {
-                                                    File f = new File(r.photoPath);
-
-                                                    if (f.exists()) f.delete();
-                                                }
-
-                                                dao.delete(r);
-
-                                                Logger.i(TAG, "hard-deleted receipt id=" + r.id);
-                                            });
-                                        })
-                                        .show();
-                            })
-                            .show();
+        private void bindThumbnail(ReceiptViewHolder holder, Receipt receipt) {
+            if (receipt.photoPath != null && new File(receipt.photoPath).exists()) {
+                final Bitmap thumbnail = ReceiptImageStore.decodeSampled(
+                        receipt.photoPath, THUMBNAIL_DIM, THUMBNAIL_DIM);
+                if (thumbnail != null) {
+                    holder.thumb.setImageBitmap(thumbnail);
                 } else {
-                    Intent i = new Intent(ReceiptListActivity.this, EditReceiptActivity.class);
+                    holder.thumb.setImageDrawable(null);
+                }
+            } else {
+                holder.thumb.setImageDrawable(null);
+            }
+        }
 
-                    i.putExtra(EditReceiptActivity.EXTRA_RECEIPT_ID, r.id);
 
-                    startActivity(i);
+        private void bindRowClick(ReceiptViewHolder holder, Receipt receipt, boolean isDeleted) {
+            holder.itemView.setOnClickListener(clickedView -> {
+                if (isDeleted) {
+                    showDeletedReceiptDialog(receipt);
+                } else {
+                    final Intent editIntent = new Intent(ReceiptListActivity.this, EditReceiptActivity.class);
+                    editIntent.putExtra(EditReceiptActivity.EXTRA_RECEIPT_ID, receipt.id);
+                    startActivity(editIntent);
                 }
             });
         }
 
 
-        @Override public int getItemCount() { return data.size(); }
+        private void showDeletedReceiptDialog(Receipt receipt) {
+            // Offer restore instead of opening the editor on a deleted row.
+            final String merchantLabel;
+            if (receipt.merchant == null) {
+                merchantLabel = PLACEHOLDER_NO_MERCHANT;
+            } else {
+                merchantLabel = receipt.merchant;
+            }
+            new AlertDialog.Builder(ReceiptListActivity.this)
+                    .setTitle("Restore receipt?")
+                    .setMessage("Bring '" + merchantLabel + "' back to the active list?")
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setPositiveButton("Restore", (dialogInterface, which) -> {
+                        final long idToRestore = receipt.id;
+                        executors.diskIO().execute(() -> {
+                            dao.restore(idToRestore);
+                            Logger.i(TAG, "restored receipt id=" + idToRestore);
+                        });
+                    })
+                    .setNeutralButton("Delete forever", (dialogInterface, which) -> {
+                        final long idToHardDelete = receipt.id;
+                        final String photoPath = receipt.photoPath;
+                        new AlertDialog.Builder(ReceiptListActivity.this)
+                                .setTitle("Delete forever?")
+                                .setMessage("This will permanently remove the receipt and its photo.")
+                                .setNegativeButton(android.R.string.cancel, null)
+                                .setPositiveButton("Delete", (dialog2, which2) -> {
+                                    executors.diskIO().execute(() -> {
+                                        if (photoPath != null) {
+                                            final File photoFile = new File(photoPath);
+                                            if (photoFile.exists()) {
+                                                final boolean deleted = photoFile.delete();
+                                                if (!deleted) {
+                                                    Logger.w(TAG, "Failed to delete photo: " + photoPath);
+                                                }
+                                            }
+                                        }
+                                        dao.delete(receipt);
+                                        Logger.i(TAG, "hard-deleted receipt id=" + idToHardDelete);
+                                    });
+                                })
+                                .show();
+                    })
+                    .show();
+        }
 
 
-        class VH extends RecyclerView.ViewHolder {
+        @Override
+        public int getItemCount() {
+            return data.size();
+        }
+
+
+        class ReceiptViewHolder extends RecyclerView.ViewHolder {
             final ImageView thumb;
+            final TextView merchant;
+            final TextView date;
+            final TextView status;
+            final TextView amount;
 
-            final TextView merchant, date, status, amount;
-
-            VH(View v) {
-                super(v);
-
-                thumb = v.findViewById(R.id.iv_thumb);
-
-                merchant = v.findViewById(R.id.tv_merchant);
-
-                date = v.findViewById(R.id.tv_date);
-
-                status = v.findViewById(R.id.tv_status);
-
-                amount = v.findViewById(R.id.tv_amount);
+            ReceiptViewHolder(View itemView) {
+                super(itemView);
+                thumb = itemView.findViewById(R.id.iv_thumb);
+                merchant = itemView.findViewById(R.id.tv_merchant);
+                date = itemView.findViewById(R.id.tv_date);
+                status = itemView.findViewById(R.id.tv_status);
+                amount = itemView.findViewById(R.id.tv_amount);
             }
         }
     }

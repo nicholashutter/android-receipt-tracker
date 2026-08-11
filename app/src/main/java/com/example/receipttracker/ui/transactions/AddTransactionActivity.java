@@ -35,6 +35,11 @@ import java.util.Calendar;
 import java.util.TimeZone;
 
 
+/**
+ * Editor for one bank transaction. In "new" mode (no {@link #EXTRA_TRANSACTION_ID}
+ * extra) it just creates a fresh row on save. In "edit" mode it loads the
+ * existing row, lets the user tweak it, and updates.
+ */
 public class AddTransactionActivity extends AppCompatActivity {
 
     public static final String EXTRA_TRANSACTION_ID = "tx_id";
@@ -47,18 +52,30 @@ public class AddTransactionActivity extends AppCompatActivity {
 
     public static final String EXTRA_ACCOUNT = "account";
 
-
-    private TextInputEditText etDescription, etAmount, etDate, etAccount;
-
-    private MaterialButton btnSave, btnCancel;
+    private static final String TAG = "AddTx";
 
 
-    private long existingId = -1;
+    private TextInputEditText etDescription;
 
+    private TextInputEditText etAmount;
+
+    private TextInputEditText etDate;
+
+    private TextInputEditText etAccount;
+
+    private MaterialButton btnSave;
+
+    private MaterialButton btnCancel;
+
+
+    // MUTABLE: re-set on DatePicker callbacks.
+    private long existingId = -1L;
+
+    // MUTABLE: re-set on DatePicker callbacks.
     private long dateMillis = System.currentTimeMillis();
 
 
-    private final AppExecutors exec = AppExecutors.get();
+    private final AppExecutors executors = AppExecutors.get();
 
 
     @Override
@@ -66,94 +83,53 @@ public class AddTransactionActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
 
         Logger.section("ADD TX");
-
-        Logger.i("AddTx", "onCreate existingId=" + existingId);
-
+        Logger.i(TAG, "onCreate existingId=" + existingId);
         setContentView(R.layout.activity_add_transaction);
 
 
         etDescription = findViewById(R.id.et_description);
-
         etAmount = findViewById(R.id.et_amount);
-
         etDate = findViewById(R.id.et_date);
-
         etAccount = findViewById(R.id.et_account);
-
         btnSave = findViewById(R.id.btn_save);
-
         btnCancel = findViewById(R.id.btn_cancel);
 
 
-        etDate.setOnClickListener(v -> showDatePicker());
-
+        etDate.setOnClickListener(clickedView -> showDatePicker());
         renderDate();
 
 
         if (getIntent().hasExtra(EXTRA_TRANSACTION_ID)) {
-            existingId = getIntent().getLongExtra(EXTRA_TRANSACTION_ID, -1);
-
+            existingId = getIntent().getLongExtra(EXTRA_TRANSACTION_ID, -1L);
             loadExisting();
         }
 
 
-        btnSave.setOnClickListener(v -> {
-            String descText;
-
-            if (etDescription.getText() == null) {
-                descText = "";
-            } else {
-                descText = etDescription.getText().toString();
-            }
-
-            String amountText;
-
-            if (etAmount.getText() == null) {
-                amountText = "";
-            } else {
-                amountText = etAmount.getText().toString();
-            }
-
-            Logger.i("AddTx", "btn_save clicked: desc='" + descText
-                    + "' amount='" + amountText + "'");
-
-            save();
-        });
-
-        btnCancel.setOnClickListener(v -> {
-            Logger.i("AddTx", "btn_cancel clicked");
-
-            finish();
-        });
+        btnSave.setOnClickListener(clickedView -> save());
+        btnCancel.setOnClickListener(clickedView -> finish());
     }
 
 
     private void loadExisting() {
-        final long id = existingId;
-
-        exec.diskIO().execute(() -> {
-            BankTransaction t = AppDatabase.get(AddTransactionActivity.this)
-                    .bankTransactionDao().getById(id);
-
-            exec.mainThread().execute(() -> {
-                if (t == null) { finish(); return; }
-
-                etDescription.setText(t.description);
-
-                etAmount.setText(String.valueOf(t.amount));
-
-                String accountText;
-
-                if (t.account == null) {
+        final long idToLoad = existingId;
+        executors.diskIO().execute(() -> {
+            final BankTransaction existing = AppDatabase.get(AddTransactionActivity.this)
+                    .bankTransactionDao().getById(idToLoad);
+            executors.mainThread().execute(() -> {
+                if (existing == null) {
+                    finish();
+                    return;
+                }
+                etDescription.setText(existing.description);
+                etAmount.setText(String.valueOf(existing.amount));
+                final String accountText;
+                if (existing.account == null) {
                     accountText = "";
                 } else {
-                    accountText = t.account;
+                    accountText = existing.account;
                 }
-
                 etAccount.setText(accountText);
-
-                dateMillis = t.dateMillis;
-
+                dateMillis = existing.dateMillis;
                 renderDate();
             });
         });
@@ -166,111 +142,115 @@ public class AddTransactionActivity extends AppCompatActivity {
 
 
     private void showDatePicker() {
-        Calendar c = Calendar.getInstance(TimeZone.getDefault());
-
-        c.setTimeInMillis(dateMillis);
+        final Calendar initial = Calendar.getInstance(TimeZone.getDefault());
+        initial.setTimeInMillis(dateMillis);
 
         new DatePickerDialog(this,
-                (view, year, month, day) -> {
-                    Calendar n = Calendar.getInstance(TimeZone.getDefault());
-
-                    n.clear();
-
-                    n.set(year, month, day);
-
-                    dateMillis = n.getTimeInMillis();
-
+                (view, pickedYear, pickedMonth, pickedDay) -> {
+                    final Calendar picked = Calendar.getInstance(TimeZone.getDefault());
+                    picked.clear();
+                    picked.set(pickedYear, pickedMonth, pickedDay);
+                    dateMillis = picked.getTimeInMillis();
                     renderDate();
                 },
-
-                c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH))
+                initial.get(Calendar.YEAR),
+                initial.get(Calendar.MONTH),
+                initial.get(Calendar.DAY_OF_MONTH))
                 .show();
     }
 
 
     private boolean validate() {
-        boolean ok = true;
+        final String descriptionText;
+        if (etDescription.getText() == null) {
+            descriptionText = "";
+        } else {
+            descriptionText = etDescription.getText().toString().trim();
+        }
 
-        if (etDescription.getText() == null || etDescription.getText().toString().trim().isEmpty()) {
+        boolean isValid = true;
+        if (descriptionText.isEmpty()) {
             etDescription.setError(getString(R.string.error_required));
-
-            ok = false;
+            isValid = false;
         }
-
-        if (parseAmount() <= 0) {
+        if (parseAmount() <= 0.0) {
             etAmount.setError(getString(R.string.error_invalid_amount));
-
-            ok = false;
+            isValid = false;
         }
-
-        return ok;
+        return isValid;
     }
 
 
     private double parseAmount() {
-        if (etAmount.getText() == null) return 0;
+        if (etAmount.getText() == null) return 0.0;
 
-        String s = etAmount.getText().toString().replace("$", "").replace(",", "").trim();
+        final String rawText = etAmount.getText().toString().replace("$", "").replace(",", "").trim();
+        if (rawText.isEmpty()) return 0.0;
 
-        if (s.isEmpty()) return 0;
-
-        try { return Double.parseDouble(s); } catch (NumberFormatException e) { return 0; }
+        try {
+            return Double.parseDouble(rawText);
+        } catch (NumberFormatException parseFailure) {
+            return 0.0;
+        }
     }
 
 
     private void save() {
         if (!validate()) return;
 
-        final BankTransaction t = new BankTransaction();
-
-        if (existingId >= 0) {
-            t.id = existingId;
+        final long resolvedId;
+        if (existingId >= 0L) {
+            resolvedId = existingId;
         } else {
-            t.id = 0;
+            resolvedId = 0L;
         }
 
-        t.description = etDescription.getText().toString().trim();
-
-        t.amount = parseAmount();
-
-        t.dateMillis = dateMillis;
-
+        final String accountText;
         if (etAccount.getText() == null) {
-            t.account = null;
+            accountText = null;
         } else {
-            t.account = etAccount.getText().toString().trim();
+            accountText = etAccount.getText().toString().trim();
         }
 
-        t.createdAt = System.currentTimeMillis();
+        final BankTransaction draft = new BankTransaction(
+                resolvedId,
+                etDescription.getText().toString().trim(),
+                dateMillis,
+                parseAmount(),
+                accountText,
+                System.currentTimeMillis(),
+                null);
 
-        Logger.i("AddTx", "save: id=" + t.id + " desc='" + t.description + "' amount=" + t.amount
-                + " dateMillis=" + t.dateMillis + " account='" + t.account + "'");
+        Logger.i(TAG, "save: id=" + draft.id
+                + " desc='" + draft.description + "'"
+                + " amount=" + draft.amount
+                + " dateMillis=" + draft.dateMillis
+                + " account='" + draft.account + "'");
 
 
-        exec.diskIO().execute(() -> {
-            BankTransactionDao dao = AppDatabase.get(AddTransactionActivity.this).bankTransactionDao();
+        executors.diskIO().execute(() -> {
+            final BankTransactionDao dao = AppDatabase.get(AddTransactionActivity.this)
+                    .bankTransactionDao();
 
-            if (t.id > 0) {
-                BankTransaction existing = dao.getById(t.id);
-
+            if (draft.id > 0L) {
+                final BankTransaction existing = dao.getById(draft.id);
+                final BankTransaction toUpdate;
                 if (existing != null) {
-                    t.matchGroupId = existing.matchGroupId;
-
-                    t.createdAt = existing.createdAt;
+                    toUpdate = draft
+                            .withMatchGroupId(existing.matchGroupId)
+                            .withCreatedAt(existing.createdAt);
+                } else {
+                    toUpdate = draft;
                 }
-
-                dao.update(t);
-
-                Logger.i("AddTx", "Updated bank transaction id=" + t.id);
+                dao.update(toUpdate);
+                Logger.i(TAG, "Updated bank transaction id=" + toUpdate.id);
             } else {
-                long newId = dao.insert(t);
-
-                Logger.i("AddTx", "Inserted bank transaction id=" + newId);
+                final long newId = dao.insert(draft);
+                Logger.i(TAG, "Inserted bank transaction id=" + newId);
             }
 
-            exec.mainThread().execute(() -> {
+            executors.mainThread().execute(() -> {
                 Toast.makeText(AddTransactionActivity.this, R.string.saved, Toast.LENGTH_SHORT).show();
-
                 finish();
             });
         });

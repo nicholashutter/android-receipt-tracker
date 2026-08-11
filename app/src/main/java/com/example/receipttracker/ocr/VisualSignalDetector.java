@@ -12,9 +12,6 @@ import androidx.annotation.NonNull;
 import com.example.receipttracker.log.Logger;
 
 
-import java.util.Arrays;
-
-
 /**
  * Pixel-level detector for "the user marked this on purpose" signals
  * on a receipt photo: a yellow highlighter swatch, or a pen circle
@@ -49,35 +46,52 @@ import java.util.Arrays;
  */
 public final class VisualSignalDetector {
 
+    private static final String LOG_TAG = "VisualSig";
+
+    private static final float HIGHLIGHT_R_MIN = 0.78f;  // 200/255
+    private static final float HIGHLIGHT_G_MIN = 0.70f;  // 178/255
+    private static final float HIGHLIGHT_B_MAX = 0.40f;  // 102/255
+    private static final float DARK_LUMINANCE_MAX = 0.35f; // 89/255
+
+    private static final int DEFAULT_SAMPLE_STRIDE = 2;
+
+    private static final float RING_MARGIN_FRACTION = 0.30f;
+    private static final float ASPECT_MIN = 0.6f;
+    private static final float ASPECT_MAX = 1.6f;
+    private static final int SMALL_BBOX_MAX_WIDTH = 30;
+    private static final int SMALL_BBOX_MAX_HEIGHT = 12;
+    private static final float SMALL_BBOX_SCORE_FACTOR = 0.5f;
+    private static final float DENSITY_MIN_FOR_RATIO = 0.01f;
+    private static final float RING_DENSITY_TARGET = 0.25f;
+    private static final float RATIO_ABOVE_ONE_NORMALISER = 1.5f;
+    private static final float RING_DENSITY_FLOOR = 0.0f;
+    private static final int ARGB_ALPHA_SHIFT = 24;
+    private static final int ARGB_RED_SHIFT = 16;
+    private static final int ARGB_GREEN_SHIFT = 8;
+    private static final int ARGB_CHANNEL_MASK = 0xFF;
+    private static final int PIXEL_VALUE_MAX = 255;
+    private static final float LUMA_RED_WEIGHT = 0.299f;
+    private static final float LUMA_GREEN_WEIGHT = 0.587f;
+    private static final float LUMA_BLUE_WEIGHT = 0.114f;
+
+
+    private VisualSignalDetector() {}
+
+
     /** A detected visual emphasis on a number's bounding box. */
     public static final class Signals {
         public final float highlightScore;
-
         public final float circleScore;
 
-
-        public Signals(float highlightScore, float circleScore) {
+        public Signals(final float highlightScore, final float circleScore) {
             this.highlightScore = clamp01(highlightScore);
-
             this.circleScore = clamp01(circleScore);
         }
-
 
         /** Either signal tripped its threshold. */
         public boolean isEmphasised() {
             return highlightScore >= 0.20f || circleScore >= 0.25f;
         }
-
-
-        /** Higher = more likely the user marked this on purpose. */
-        public float emphasis() {
-            // Highlight is a stronger signal than circle (highlight is
-            // unambiguous ink; circles can be any closed shape and
-            // false-positive on dot-matrix printed numbers). Weight
-            // highlight 2x, cap at 1.0.
-            return clamp01(highlightScore * 0.66f + circleScore * 0.34f);
-        }
-
 
         @NonNull
         @Override
@@ -87,214 +101,192 @@ public final class VisualSignalDetector {
     }
 
 
-    private static final float HIGHLIGHT_R_MIN = 0.78f;  // 200/255
-
-    private static final float HIGHLIGHT_G_MIN = 0.70f;  // 178/255
-
-    private static final float HIGHLIGHT_B_MAX = 0.40f;  // 102/255
-
-    private static final float DARK_LUMINANCE_MAX = 0.35f; // 89/255
-
-
-    private static final int DEFAULT_SAMPLE_STRIDE = 2;
-
-
-    private VisualSignalDetector() {}
-
-
     public static Signals detect(@NonNull Bitmap bitmap, @NonNull Rect bbox) {
         if (bitmap == null || bitmap.isRecycled() || bbox.isEmpty()) {
             return new Signals(0f, 0f);
         }
 
-        // Clamp the bbox to the bitmap bounds (ML Kit sometimes returns
-        // boxes that extend a few pixels past the edge).
-        int x0 = Math.max(0, bbox.left);
-
-        int y0 = Math.max(0, bbox.top);
-
-        int x1 = Math.min(bitmap.getWidth(), bbox.right);
-
-        int y1 = Math.min(bitmap.getHeight(), bbox.bottom);
-
+        // Clamp the bbox to the bitmap bounds (ML Kit sometimes
+        // returns boxes that extend a few pixels past the edge).
+        final int x0 = Math.max(0, bbox.left);
+        final int y0 = Math.max(0, bbox.top);
+        final int x1 = Math.min(bitmap.getWidth(), bbox.right);
+        final int y1 = Math.min(bitmap.getHeight(), bbox.bottom);
         if (x1 <= x0 || y1 <= y0) {
             return new Signals(0f, 0f);
         }
 
-        int w = x1 - x0;
+        final int width = x1 - x0;
+        final int height = y1 - y0;
+        final int[] pixels = new int[width * height];
+        bitmap.getPixels(pixels, 0, width, x0, y0, width, height);
 
-        int h = y1 - y0;
+        final SampleStats stats = samplePixels(pixels, width, height);
+        final float highlightScore = (stats.totalSamples == 0)
+                ? 0f
+                : (float) stats.yellowSamples / stats.totalSamples;
 
-        int[] pixels = new int[w * h];
+        final Signals signals = computeCircleScore(pixels, width, height,
+                stats.darkSamples, stats.totalSamples, x0, y0, x1, y1, highlightScore);
 
-        bitmap.getPixels(pixels, 0, w, x0, y0, w, h);
-
-
-        int total = 0;
-
-        int yellow = 0;
-
-        int dark = 0;
-
-        int stride = Math.max(1, DEFAULT_SAMPLE_STRIDE);
-
-        for (int yy = 0; yy < h; yy += stride) {
-            int rowOff = yy * w;
-
-            for (int xx = 0; xx < w; xx += stride) {
-                int p = pixels[rowOff + xx];
-
-                total++;
-
-                if (isHighlightYellow(p)) yellow++;
-
-                if (isDark(p)) dark++;
-            }
-        }
-
-        float highlightScore;
-
-        if (total == 0) {
-            highlightScore = 0f;
-        } else {
-            highlightScore = (float) yellow / total;
-        }
-
-        float circleScore = 0f;
-
-        // Suppress circle detection on bboxes that are clearly wider
-        // than they are tall — that's a line of text, not a number, and
-        // a wide bbox will produce a false "ring" (dark pixels at the
-        // left/right edges of the line + a white middle).
-        boolean plausibleCircle = (w > 0 && h > 0 && ((float) w / h) >= 0.6f && ((float) w / h) <= 1.6f);
-
-        if (!plausibleCircle) {
-            Logger.d("VisualSig", "bbox=(" + x0 + "," + y0 + "," + x1 + "," + y1 + ") "
-                    + "skipped circle: aspect " + String.format("%.2f", (float) w / h)
-                    + " out of 0.6-1.6 range (w=" + w + ", h=" + h + ")");
-        } else if (highlightScore >= 0.20f) {
-            // Already highlighted — circle score is redundant.
-            Logger.d("VisualSig", "bbox=(" + x0 + "," + y0 + "," + x1 + "," + y1 + ") "
-                    + "skipped circle: highlight score already tripped");
-        } else {
-            circleScore = estimateCircleScore(pixels, w, h, dark, total);
-        }
-
-        Logger.d("VisualSig", "bbox=(" + x0 + "," + y0 + "," + x1 + "," + y1 + ") "
-                + "yellow=" + yellow + "/" + total + " dark=" + dark
-                + " -> " + new Signals(highlightScore, circleScore));
-
-        return new Signals(highlightScore, circleScore);
+        Logger.d(LOG_TAG, "bbox=(" + x0 + "," + y0 + "," + x1 + "," + y1 + ") "
+                + "yellow=" + stats.yellowSamples + "/" + stats.totalSamples
+                + " dark=" + stats.darkSamples
+                + " -> " + new Signals(highlightScore, signals.circleScore));
+        return new Signals(highlightScore, signals.circleScore);
     }
 
 
-    private static float estimateCircleScore(int[] pixels, int w, int h, int darkSampled, int totalSampled) {
-        // For the circle heuristic, we want to know whether the dark
-        // pixels form a ring (high in the perimeter, low in the centre)
-        // rather than filling the whole bbox (which would just be a
-        // bold printed number). We use the same stride as the highlight
-        // pass for consistency.
-        int stride = Math.max(1, DEFAULT_SAMPLE_STRIDE);
+    /** Sampler output: how many pixels we looked at and which were yellow/dark. */
+    private static final class SampleStats {
+        final int totalSamples;
+        final int yellowSamples;
+        final int darkSamples;
 
-        int ring = 0, core = 0;
+        SampleStats(int totalSamples, int yellowSamples, int darkSamples) {
+            this.totalSamples = totalSamples;
+            this.yellowSamples = yellowSamples;
+            this.darkSamples = darkSamples;
+        }
+    }
 
-        int ringSamples = 0, coreSamples = 0;
 
-        for (int yy = 0; yy < h; yy += stride) {
-            for (int xx = 0; xx < w; xx += stride) {
-                boolean inRing = isInOuterRing(xx, yy, w, h);
+    private static SampleStats samplePixels(int[] pixels, int width, int height) {
+        int totalSamples = 0;
+        int yellowSamples = 0;
+        int darkSamples = 0;
+        final int stride = Math.max(1, DEFAULT_SAMPLE_STRIDE);
+        for (int y = 0; y < height; y += stride) {
+            final int rowOffset = y * width;
+            for (int x = 0; x < width; x += stride) {
+                final int pixel = pixels[rowOffset + x];
+                totalSamples++;
+                if (isHighlightYellow(pixel)) yellowSamples++;
+                if (isDark(pixel)) darkSamples++;
+            }
+        }
+        return new SampleStats(totalSamples, yellowSamples, darkSamples);
+    }
 
+
+    /**
+     * Computes the circle score; or returns a zero-score Signals if
+     * the bbox is the wrong shape for a circle, or the highlight
+     * signal already tripped (in which case circle is redundant).
+     */
+    private static Signals computeCircleScore(int[] pixels, int width, int height,
+                                              int darkSamples, int totalSamples,
+                                              int x0, int y0, int x1, int y1,
+                                              float highlightScore) {
+        final float aspectRatio = (height > 0) ? (float) width / height : 0f;
+        final boolean plausibleCircle = aspectRatio >= ASPECT_MIN && aspectRatio <= ASPECT_MAX;
+
+        if (!plausibleCircle) {
+            Logger.d(LOG_TAG, "bbox=(" + x0 + "," + y0 + "," + x1 + "," + y1 + ") "
+                    + "skipped circle: aspect " + String.format("%.2f", aspectRatio)
+                    + " out of " + ASPECT_MIN + "-" + ASPECT_MAX + " range (w=" + width + ", h=" + height + ")");
+            return new Signals(0f, 0f);
+        }
+        if (highlightScore >= 0.20f) {
+            Logger.d(LOG_TAG, "bbox=(" + x0 + "," + y0 + "," + x1 + "," + y1 + ") "
+                    + "skipped circle: highlight score already tripped");
+            return new Signals(0f, 0f);
+        }
+        final float circleScore = estimateCircleScore(pixels, width, height, darkSamples, totalSamples);
+        return new Signals(0f, circleScore);
+    }
+
+
+    /**
+     * For the circle heuristic, we want to know whether the dark
+     * pixels form a ring (high in the perimeter, low in the centre)
+     * rather than filling the whole bbox (which would just be a bold
+     * printed number). We use the same stride as the highlight pass
+     * for consistency.
+     */
+    private static float estimateCircleScore(int[] pixels, int width, int height,
+                                             int darkSampled, int totalSampled) {
+        int ring = 0;
+        int core = 0;
+        int ringSamples = 0;
+        int coreSamples = 0;
+        final int stride = Math.max(1, DEFAULT_SAMPLE_STRIDE);
+        for (int y = 0; y < height; y += stride) {
+            for (int x = 0; x < width; x += stride) {
+                final boolean inRing = isInOuterRing(x, y, width, height);
                 if (inRing) {
                     ringSamples++;
-
-                    if (isDark(pixels[yy * w + xx])) ring++;
+                    if (isDark(pixels[y * width + x])) ring++;
                 } else {
                     coreSamples++;
-
-                    if (isDark(pixels[yy * w + xx])) core++;
+                    if (isDark(pixels[y * width + x])) core++;
                 }
             }
         }
-
         if (ringSamples == 0 || coreSamples == 0) return 0f;
 
-        float ringDensity = (float) ring / ringSamples;
-
-        float coreDensity = (float) core / coreSamples;
-
+        final float ringDensity = (float) ring / ringSamples;
+        final float coreDensity = (float) core / coreSamples;
         if (ringDensity <= coreDensity) return 0f; // not a ring
 
         // Ratio: how much more dark is the ring than the core?
         // A ratio >= 2 with non-trivial ring density is a clear circle.
-        float ratio = ringDensity / Math.max(0.01f, coreDensity);
-
-        float score = clamp01((ratio - 1.0f) / 1.5f) * clamp01(ringDensity / 0.25f);
+        final float ratio = ringDensity / Math.max(DENSITY_MIN_FOR_RATIO, coreDensity);
+        float score = clamp01((ratio - 1.0f) / RATIO_ABOVE_ONE_NORMALISER)
+                * clamp01(ringDensity / RING_DENSITY_TARGET);
 
         // Suppress the circle signal on bboxes that are too small to
-        // plausibly contain a circle (heuristic: needs to be > 12px tall
-        // and > 30px wide; OCR box noise below that is junk).
-        if (h < 12 || w < 30) score *= 0.5f;
+        // plausibly contain a circle (heuristic: needs to be > 12px
+        // tall and > 30px wide; OCR box noise below that is junk).
+        if (height < SMALL_BBOX_MAX_HEIGHT || width < SMALL_BBOX_MAX_WIDTH) {
+            score *= SMALL_BBOX_SCORE_FACTOR;
+        }
 
-        // Normalise using totalSampled / w/h to make a debug note.
-        Logger.d("VisualSig", "  ring=" + ring + "/" + ringSamples
+        Logger.d(LOG_TAG, "  ring=" + ring + "/" + ringSamples
                 + " core=" + core + "/" + coreSamples
                 + " ratio=" + String.format("%.2f", ratio)
                 + " raw=" + String.format("%.2f", score));
-
-        return score;
+        return Math.max(RING_DENSITY_FLOOR, score);
     }
 
 
-    private static boolean isInOuterRing(int x, int y, int w, int h) {
+    private static boolean isInOuterRing(int x, int y, int width, int height) {
         // Outer 30% on each side is "ring", inner 40% is "core".
-        int marginX = (int) (w * 0.30f);
-
-        int marginY = (int) (h * 0.30f);
-
-        return x < marginX || x >= w - marginX || y < marginY || y >= h - marginY;
+        final int marginX = (int) (width * RING_MARGIN_FRACTION);
+        final int marginY = (int) (height * RING_MARGIN_FRACTION);
+        return x < marginX || x >= width - marginX || y < marginY || y >= height - marginY;
     }
 
 
-    private static boolean isHighlightYellow(int p) {
+    private static boolean isHighlightYellow(int pixel) {
         // ARGB -> RGB
-        int r = (p >> 16) & 0xFF;
-
-        int g = (p >> 8) & 0xFF;
-
-        int b = p & 0xFF;
-
-        float rf = r / 255f, gf = g / 255f, bf = b / 255f;
-
-        return rf >= HIGHLIGHT_R_MIN
-                && gf >= HIGHLIGHT_G_MIN
-                && bf <= HIGHLIGHT_B_MAX;
+        final int r = (pixel >> ARGB_RED_SHIFT) & ARGB_CHANNEL_MASK;
+        final int g = (pixel >> ARGB_GREEN_SHIFT) & ARGB_CHANNEL_MASK;
+        final int b = pixel & ARGB_CHANNEL_MASK;
+        final float redFraction = r / (float) PIXEL_VALUE_MAX;
+        final float greenFraction = g / (float) PIXEL_VALUE_MAX;
+        final float blueFraction = b / (float) PIXEL_VALUE_MAX;
+        return redFraction >= HIGHLIGHT_R_MIN
+                && greenFraction >= HIGHLIGHT_G_MIN
+                && blueFraction <= HIGHLIGHT_B_MAX;
     }
 
 
-    private static boolean isDark(int p) {
-        int r = (p >> 16) & 0xFF;
-
-        int g = (p >> 8) & 0xFF;
-
-        int b = p & 0xFF;
+    private static boolean isDark(int pixel) {
+        final int r = (pixel >> ARGB_RED_SHIFT) & ARGB_CHANNEL_MASK;
+        final int g = (pixel >> ARGB_GREEN_SHIFT) & ARGB_CHANNEL_MASK;
+        final int b = pixel & ARGB_CHANNEL_MASK;
 
         // Perceptual luminance approximation.
-        float lum = (0.299f * r + 0.587f * g + 0.114f * b) / 255f;
-
-        return lum <= DARK_LUMINANCE_MAX;
+        final float luminance = (LUMA_RED_WEIGHT * r + LUMA_GREEN_WEIGHT * g + LUMA_BLUE_WEIGHT * b)
+                / (float) PIXEL_VALUE_MAX;
+        return luminance <= DARK_LUMINANCE_MAX;
     }
 
 
-    private static float clamp01(float v) {
-        if (v < 0f) return 0f;
-
-        if (v > 1f) return 1f;
-
-        return v;
+    private static float clamp01(float value) {
+        if (value < 0f) return 0f;
+        if (value > 1f) return 1f;
+        return value;
     }
-
-
-    // Suppress an unused-import warning on Arrays in some toolchains.
-    @SuppressWarnings("unused")
-    private static void __touchArrays() { Arrays.asList(1, 2, 3).toString(); }
 }

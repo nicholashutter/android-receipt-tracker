@@ -17,17 +17,21 @@ import androidx.room.migration.Migration;
 import androidx.sqlite.db.SupportSQLiteDatabase;
 
 
+/**
+ * The one and only {@link RoomDatabase} for the app. Holds the three
+ * entities (Receipt, BankTransaction, Budget) and the single v1->v2
+ * migration that introduced the budgets table plus the matching
+ * nullable columns on receipts.
+ */
 @Database(
         entities = {Receipt.class, BankTransaction.class, Budget.class},
-
         version = 2,
-        exportSchema = false
-)
+        exportSchema = false)
 public abstract class AppDatabase extends RoomDatabase {
 
-    private static final String DB_NAME = "receipt_tracker.db";
+    private static final String DATABASE_NAME = "receipt_tracker.db";
 
-    private static volatile AppDatabase INSTANCE;
+    private static volatile AppDatabase instance;
 
 
     public abstract ReceiptDao receiptDao();
@@ -40,53 +44,59 @@ public abstract class AppDatabase extends RoomDatabase {
     /**
      * v1 -> v2: add the {@code budgets} table, plus two nullable columns
      * on {@code receipts} ({@code budgetId}, {@code deletedAt}) and the
-     * matching indices. All new bits are nullable / have defaults, so the
-     * migration is purely additive and safe on existing data.
+     * matching indices. All new bits are nullable / have defaults, so
+     * the migration is purely additive and safe on existing data.
      */
     static final Migration MIGRATION_1_2 = new Migration(1, 2) {
         @Override
-        public void migrate(@NonNull SupportSQLiteDatabase db) {
-            db.execSQL("CREATE TABLE IF NOT EXISTS `budgets` ("
+        public void migrate(@NonNull SupportSQLiteDatabase database) {
+            final String createBudgets = "CREATE TABLE IF NOT EXISTS `budgets` ("
                     + "`id` INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "
                     + "`name` TEXT, "
                     + "`maxAmount` REAL NOT NULL, "
                     + "`createdAt` INTEGER NOT NULL, "
                     + "`isActive` INTEGER NOT NULL, "
-                    + "`isDeleted` INTEGER NOT NULL)");
+                    + "`isDeleted` INTEGER NOT NULL)";
+            database.execSQL(createBudgets);
 
-            db.execSQL("CREATE INDEX IF NOT EXISTS `index_budgets_isActive` "
-                    + "ON `budgets` (`isActive`)");
+            final String createBudgetsIndex = "CREATE INDEX IF NOT EXISTS `index_budgets_isActive` "
+                    + "ON `budgets` (`isActive`)";
+            database.execSQL(createBudgetsIndex);
 
-            db.execSQL("ALTER TABLE `receipts` ADD COLUMN `budgetId` INTEGER");
+            final String addBudgetIdToReceipts = "ALTER TABLE `receipts` ADD COLUMN `budgetId` INTEGER";
+            database.execSQL(addBudgetIdToReceipts);
 
-            db.execSQL("ALTER TABLE `receipts` ADD COLUMN `deletedAt` INTEGER");
+            final String addDeletedAtToReceipts = "ALTER TABLE `receipts` ADD COLUMN `deletedAt` INTEGER";
+            database.execSQL(addDeletedAtToReceipts);
 
-            db.execSQL("CREATE INDEX IF NOT EXISTS `index_receipts_budgetId` "
-                    + "ON `receipts` (`budgetId`)");
+            final String createReceiptsBudgetIdIndex = "CREATE INDEX IF NOT EXISTS `index_receipts_budgetId` "
+                    + "ON `receipts` (`budgetId`)";
+            database.execSQL(createReceiptsBudgetIdIndex);
 
-            db.execSQL("CREATE INDEX IF NOT EXISTS `index_receipts_deletedAt` "
-                    + "ON `receipts` (`deletedAt`)");
+            final String createReceiptsDeletedAtIndex = "CREATE INDEX IF NOT EXISTS `index_receipts_deletedAt` "
+                    + "ON `receipts` (`deletedAt`)";
+            database.execSQL(createReceiptsDeletedAtIndex);
         }
     };
 
 
     public static AppDatabase get(Context context) {
-        if (INSTANCE == null) {
+        if (instance == null) {
             synchronized (AppDatabase.class) {
-                if (INSTANCE == null) {
-                    INSTANCE = Room.databaseBuilder(
+                if (instance == null) {
+                    final AppDatabase built = Room.databaseBuilder(
                                     context.getApplicationContext(),
                                     AppDatabase.class,
-                                    DB_NAME)
+                                    DATABASE_NAME)
                             .addMigrations(MIGRATION_1_2)
                             // Last-resort: if a future version can't migrate,
                             // wipe rather than crash. Pre-alpha, so OK.
                             .fallbackToDestructiveMigration()
                             .build();
+                    instance = built;
                 }
             }
         }
-
-        return INSTANCE;
+        return instance;
     }
 }

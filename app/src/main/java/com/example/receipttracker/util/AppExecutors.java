@@ -16,48 +16,57 @@ import java.util.concurrent.Executors;
 
 /**
  * Tiny two-executor pool shared by the app.
- * <p>
- * - {@link #diskIO()} - single-thread executor for all Room work. One thread keeps writes
- *   serialized and avoids the "main thread is waiting for a write it just kicked off"
- *   surprise that bites you with bigger pools.
- * - {@link #mainThread()} - the UI thread, used to post results back after disk work.
- * <p>
- * This is the deliberate "Executor + LiveData" half of the AsyncTask replacement. LiveData
- * is used for the list-loaders in the activities; the one-shot operations (save, delete,
- * export, match confirm/unlink) use these executors directly.
+ *
+ * <ul>
+ *   <li>{@link #diskIO()} - single-thread executor for all Room work.
+ *       One thread keeps writes serialized and avoids the "main thread
+ *       is waiting for a write it just kicked off" surprise that bites
+ *       you with bigger pools.</li>
+ *   <li>{@link #mainThread()} - the UI thread, used to post results
+ *       back after disk work.</li>
+ * </ul>
+ *
+ * <p>This is the deliberate "Executor + LiveData" half of the
+ * AsyncTask replacement. LiveData is used for the list-loaders in the
+ * activities; the one-shot operations (save, delete, export, match
+ * confirm/unlink) use these executors directly.</p>
  */
 public final class AppExecutors {
 
     private static final AppExecutors INSTANCE = new AppExecutors();
 
-
-    public static AppExecutors get() { return INSTANCE; }
-
-
     private final Executor diskIO;
-
     private final Executor mainThread;
+
+
+    public static AppExecutors get() {
+        return INSTANCE;
+    }
 
 
     private AppExecutors() {
         this.diskIO = Executors.newSingleThreadExecutor();
-
         this.mainThread = new MainThreadExecutor();
     }
 
 
-    public Executor diskIO() { return diskIO; }
+    public Executor diskIO() {
+        return diskIO;
+    }
 
 
-    public Executor mainThread() { return mainThread; }
+    public Executor mainThread() {
+        return mainThread;
+    }
 
 
-    private static class MainThreadExecutor implements Executor {
-        private final Handler handler = new Handler(Looper.getMainLooper());
+    /** Wraps the main looper as an {@link Executor}. */
+    private static final class MainThreadExecutor implements Executor {
+        private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
         @Override
         public void execute(@NonNull Runnable command) {
-            handler.post(command);
+            mainHandler.post(command);
         }
     }
 }

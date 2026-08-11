@@ -7,13 +7,11 @@ import androidx.annotation.Nullable;
 import com.example.receipttracker.log.Logger;
 
 
-import java.text.ParseException;
+import java.util.ArrayList;
 
-import java.text.SimpleDateFormat;
+import java.util.Arrays;
 
 import java.util.Calendar;
-
-import java.util.Date;
 
 import java.util.List;
 
@@ -54,7 +52,7 @@ public final class ReceiptParser {
     );
 
 
-    private static final Pattern DATE_PATTERNS[] = new Pattern[] {
+    private static final Pattern[] DATE_PATTERNS = new Pattern[] {
             // 2024-01-05, 2024/1/5
             Pattern.compile("\\b(20\\d{2})[-/](\\d{1,2})[-/](\\d{1,2})\\b"),
             // 01/05/2024, 1/5/24
@@ -75,53 +73,50 @@ public final class ReceiptParser {
 
 
     public static ParsedReceipt parse(String rawText) {
-        long t0 = System.currentTimeMillis();
-
-        ParsedReceipt out = new ParsedReceipt();
+        final long startMillis = System.currentTimeMillis();
 
         if (rawText == null || rawText.trim().isEmpty()) {
             Logger.w("Parser", "parse() called with empty text");
-
-            return out;
+            return ParsedReceipt.EMPTY;
         }
 
 
-        String[] lines = rawText.split("\\r?\\n");
-
+        final String[] lines = rawText.split("\\r?\\n");
         Logger.i("Parser", "Parsing " + lines.length + " lines, " + rawText.length() + " chars");
 
 
-        out.merchant = guessMerchant(lines);
+        final String merchantGuess = guessMerchant(lines);
 
-        if (out.merchant == null) {
-            out.merchantPrediction = null;
+        final MerchantClassifier.Prediction merchantPrediction;
+        if (merchantGuess == null) {
+            merchantPrediction = null;
         } else {
-            out.merchantPrediction = MerchantClassifier.predict(out.merchant);
+            merchantPrediction = MerchantClassifier.predict(merchantGuess);
         }
 
-        out.dateMillis = guessDate(rawText);
+        final ParsedReceipt parsed = ParsedReceipt.EMPTY
+                .withMerchant(merchantGuess)
+                .withMerchantPrediction(merchantPrediction)
+                .withDateMillis(guessDate(rawText))
+                .withAmount(guessAmount(lines))
+                .withRawText(rawText);
 
-        out.amount = guessAmount(lines);
 
-        out.rawText = rawText;
+        final long elapsedMs = System.currentTimeMillis() - startMillis;
 
-
-        long ms = System.currentTimeMillis() - t0;
-
-        String predDisplay;
-
-        if (out.merchantPrediction == null) {
+        final String predDisplay;
+        if (parsed.merchantPrediction == null) {
             predDisplay = "(none)";
         } else {
-            predDisplay = out.merchantPrediction.name;
+            predDisplay = parsed.merchantPrediction.name;
         }
 
-        Logger.i("Parser", "Result: merchant='" + out.merchant
+        Logger.i("Parser", "Result: merchant='" + parsed.merchant
                 + "', merchantPred=" + predDisplay
-                + ", dateMillis=" + out.dateMillis
-                + ", amount=" + out.amount + "  (" + ms + "ms)");
+                + ", dateMillis=" + parsed.dateMillis
+                + ", amount=" + parsed.amount + "  (" + elapsedMs + "ms)");
 
-        return out;
+        return parsed;
     }
 
 
@@ -185,20 +180,20 @@ public final class ReceiptParser {
     }
 
 
-    private static int countUpper(String s) {
-        int n = 0;
+    private static int countUpper(String input) {
+        int upperCount = 0;
 
-        for (int i = 0; i < s.length(); i++) {
-            if (Character.isUpperCase(s.charAt(i))) n++;
+        for (int index = 0; index < input.length(); index++) {
+            if (Character.isUpperCase(input.charAt(index))) upperCount++;
         }
 
-        return n;
+        return upperCount;
     }
 
 
-    private static String cleanLine(String s) {
+    private static String cleanLine(String input) {
         // Collapse internal whitespace.
-        return s.replaceAll("\\s+", " ").trim();
+        return input.replaceAll("\\s+", " ").trim();
     }
 
 
@@ -208,19 +203,19 @@ public final class ReceiptParser {
     private static Long guessDate(String text) {
         Logger.d("Parser", "Date: trying " + DATE_PATTERNS.length + " regex patterns");
 
-        for (int i = 0; i < DATE_PATTERNS.length; i++) {
-            Pattern p = DATE_PATTERNS[i];
+        for (int patternIndex = 0; patternIndex < DATE_PATTERNS.length; patternIndex++) {
+            final Pattern pattern = DATE_PATTERNS[patternIndex];
 
-            Matcher m = p.matcher(text);
+            final Matcher matcher = pattern.matcher(text);
 
-            if (m.find()) {
-                Long ts = tryParseDate(m);
+            if (matcher.find()) {
+                final Long timestamp = tryParseDate(matcher);
 
-                if (ts != null) {
-                    Logger.i("Parser", "Date matched pattern #" + i + ": matched='"
-                            + m.group() + "' -> millis=" + ts);
+                if (timestamp != null) {
+                    Logger.i("Parser", "Date matched pattern #" + patternIndex + ": matched='"
+                            + matcher.group() + "' -> millis=" + timestamp);
 
-                    return ts;
+                    return timestamp;
                 }
             }
         }
@@ -232,51 +227,57 @@ public final class ReceiptParser {
 
 
     @Nullable
-    private static Long tryParseDate(Matcher m) {
+    private static Long tryParseDate(Matcher matcher) {
         try {
-            int y, mo, d;
+            final int year;
 
-            String g0 = m.group(1);
+            final int month;
 
-            switch (m.groupCount()) {
+            final int day;
+
+            final String firstGroup = matcher.group(1);
+
+            switch (matcher.groupCount()) {
                 case 3:
-                    String g1 = m.group(2);
+                    final String secondGroup = matcher.group(2);
 
-                    String g2 = m.group(3);
+                    final String thirdGroup = matcher.group(3);
 
                     // YYYY-MM-DD
-                    if (g0.length() == 4 && isAllDigits(g0)) {
-                        y = Integer.parseInt(g0);
+                    if (firstGroup.length() == 4 && isAllDigits(firstGroup)) {
+                        year = Integer.parseInt(firstGroup);
 
-                        mo = Integer.parseInt(g1);
+                        month = Integer.parseInt(secondGroup);
 
-                        d = Integer.parseInt(g2);
-                    } else if (isMonthToken(g0)) {
-                        // "5 Jan 2024" - day, month-name, year
-                        d = Integer.parseInt(g0);
+                        day = Integer.parseInt(thirdGroup);
+                    } else if (isMonthToken(firstGroup)) {
+                        // "Jan 5, 2024" - month-name, day, year (pattern 5)
+                        month = monthIndex(firstGroup);
 
-                        mo = monthIndex(g1);
+                        day = Integer.parseInt(secondGroup);
 
-                        y = normaliseYear(Integer.parseInt(g2));
-                    } else if (isMonthToken(g1)) {
-                        // "Jan 5, 2024" - month-name, day, year
-                        mo = monthIndex(g0);
+                        year = normaliseYear(Integer.parseInt(thirdGroup));
+                    } else if (isMonthToken(secondGroup)) {
+                        // "5 Jan 2024" - day, month-name, year (pattern 4)
+                        day = Integer.parseInt(firstGroup);
 
-                        d = Integer.parseInt(g1);
+                        month = monthIndex(secondGroup);
 
-                        y = normaliseYear(Integer.parseInt(g2));
+                        year = normaliseYear(Integer.parseInt(thirdGroup));
                     } else {
                         // Assume MM/DD/YYYY
-                        int a = Integer.parseInt(g0);
+                        final int firstValue = Integer.parseInt(firstGroup);
 
-                        int b = Integer.parseInt(g1);
+                        final int secondValue = Integer.parseInt(secondGroup);
 
-                        y = normaliseYear(Integer.parseInt(g2));
+                        year = normaliseYear(Integer.parseInt(thirdGroup));
 
-                        if (a > 12) { // clearly day-first
-                            d = a; mo = b;
+                        if (firstValue > 12) { // clearly day-first
+                            day = firstValue;
+                            month = secondValue;
                         } else {
-                            mo = a; d = b;
+                            month = firstValue;
+                            day = secondValue;
                         }
                     }
 
@@ -286,75 +287,75 @@ public final class ReceiptParser {
                     return null;
             }
 
-            return toMidnightMillis(y, mo, d);
+            return toMidnightMillis(year, month, day);
         } catch (Exception e) {
             return null;
         }
     }
 
 
-    private static boolean isAllDigits(String s) {
-        for (int i = 0; i < s.length(); i++) {
-            if (!Character.isDigit(s.charAt(i))) return false;
+    private static boolean isAllDigits(String input) {
+        for (int index = 0; index < input.length(); index++) {
+            if (!Character.isDigit(input.charAt(index))) return false;
         }
 
-        return !s.isEmpty();
+        return !input.isEmpty();
     }
 
 
-    private static boolean isMonthToken(String s) {
-        return s != null && Pattern.compile("(?i)^(" + MONTHS + ")[a-z]*$").matcher(s).matches();
+    private static boolean isMonthToken(String token) {
+        return token != null && Pattern.compile("(?i)^(" + MONTHS + ")[a-z]*$").matcher(token).matches();
     }
 
 
     private static int monthIndex(String name) {
-        String n = name.toLowerCase();
+        final String lowerName = name.toLowerCase();
 
-        if (n.startsWith("jan")) return 1;
+        if (lowerName.startsWith("jan")) return 1;
 
-        if (n.startsWith("feb")) return 2;
+        if (lowerName.startsWith("feb")) return 2;
 
-        if (n.startsWith("mar")) return 3;
+        if (lowerName.startsWith("mar")) return 3;
 
-        if (n.startsWith("apr")) return 4;
+        if (lowerName.startsWith("apr")) return 4;
 
-        if (n.startsWith("may")) return 5;
+        if (lowerName.startsWith("may")) return 5;
 
-        if (n.startsWith("jun")) return 6;
+        if (lowerName.startsWith("jun")) return 6;
 
-        if (n.startsWith("jul")) return 7;
+        if (lowerName.startsWith("jul")) return 7;
 
-        if (n.startsWith("aug")) return 8;
+        if (lowerName.startsWith("aug")) return 8;
 
-        if (n.startsWith("sep")) return 9;
+        if (lowerName.startsWith("sep")) return 9;
 
-        if (n.startsWith("oct")) return 10;
+        if (lowerName.startsWith("oct")) return 10;
 
-        if (n.startsWith("nov")) return 11;
+        if (lowerName.startsWith("nov")) return 11;
 
-        if (n.startsWith("dec")) return 12;
+        if (lowerName.startsWith("dec")) return 12;
 
         return 1;
     }
 
 
-    private static int normaliseYear(int y) {
-        if (y < 100) {
-            return 2000 + y;
+    private static int normaliseYear(int year) {
+        if (year < 100) {
+            return 2000 + year;
         }
 
-        return y;
+        return year;
     }
 
 
-    private static long toMidnightMillis(int y, int m, int d) {
-        Calendar c = Calendar.getInstance(TimeZone.getDefault(), Locale.US);
+    private static long toMidnightMillis(int year, int month, int day) {
+        final Calendar calendar = Calendar.getInstance(TimeZone.getDefault(), Locale.US);
 
-        c.clear();
+        calendar.clear();
 
-        c.set(y, m - 1, d, 0, 0, 0);
+        calendar.set(year, month - 1, day, 0, 0, 0);
 
-        return c.getTimeInMillis();
+        return calendar.getTimeInMillis();
     }
 
 
@@ -366,7 +367,7 @@ public final class ReceiptParser {
         // (so "Subtotal 5.00 / Tax 0.40 / Total 5.40" yields 5.40).
         Logger.d("Parser", "Amount pass 1: scanning for 'total' keyword");
 
-        double best = -1;
+        double bestAmount = -1;
 
         boolean foundTotal = false;
 
@@ -379,21 +380,21 @@ public final class ReceiptParser {
 
             if (!TOTAL_KEYWORD.matcher(line).find()) continue;
 
-            List<String> nums = extractNumbers(line);
+            final List<String> numbers = extractNumbers(line);
 
-            if (nums.isEmpty()) {
+            if (numbers.isEmpty()) {
                 Logger.d("Parser", "  total-keyword line w/o number: '" + line + "'");
 
                 continue;
             }
 
-            double candidate = parseLastNumber(nums);
+            final double candidate = parseLastNumber(numbers);
 
             Logger.d("Parser", "  total line='" + line + "' -> candidate=" + candidate
-                    + " (from nums=" + nums + ")");
+                    + " (from numbers=" + numbers + ")");
 
-            if (candidate > 0 && (candidate > best || !foundTotal)) {
-                best = candidate;
+            if (candidate > 0 && (candidate > bestAmount || !foundTotal)) {
+                bestAmount = candidate;
 
                 foundTotal = true;
 
@@ -402,28 +403,28 @@ public final class ReceiptParser {
         }
 
         if (foundTotal) {
-            Logger.i("Parser", "Amount chosen: " + best + " from line '" + winningLine + "'");
+            Logger.i("Parser", "Amount chosen: " + bestAmount + " from line '" + winningLine + "'");
 
-            return best;
+            return bestAmount;
         }
 
 
         // Pass 2: no total keyword - pick the largest decimal in the receipt.
         Logger.d("Parser", "Amount pass 2: no total-keyword match, falling back to largest decimal");
 
-        double largest = -1;
+        double largestAmount = -1;
 
         String largestLine = null;
 
         for (String raw : lines) {
             String line = raw.trim();
 
-            for (String n : extractNumbers(line)) {
+            for (String numberText : extractNumbers(line)) {
                 try {
-                    double v = Double.parseDouble(n);
+                    final double value = Double.parseDouble(numberText);
 
-                    if (v > largest) {
-                        largest = v;
+                    if (value > largestAmount) {
+                        largestAmount = value;
 
                         largestLine = line;
                     }
@@ -431,10 +432,10 @@ public final class ReceiptParser {
             }
         }
 
-        if (largest > 0) {
-            Logger.i("Parser", "Amount chosen (fallback): " + largest + " from line '" + largestLine + "'");
+        if (largestAmount > 0) {
+            Logger.i("Parser", "Amount chosen (fallback): " + largestAmount + " from line '" + largestLine + "'");
 
-            return largest;
+            return largestAmount;
         }
 
         Logger.w("Parser", "No amount detected at all");
@@ -443,35 +444,35 @@ public final class ReceiptParser {
     }
 
 
-    private static double parseLastNumber(List<String> nums) {
-        return Double.parseDouble(nums.get(nums.size() - 1));
+    private static double parseLastNumber(List<String> numbers) {
+        return Double.parseDouble(numbers.get(numbers.size() - 1));
     }
 
 
     private static List<String> extractNumbers(String line) {
-        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        final List<String> matches = new ArrayList<>();
 
-        Matcher m = MONEY.matcher(line);
-        while (m.find()) {
-            String n = m.group().replace("$", "").replace(",", "").replace(" ", "").trim();
+        final Matcher matcher = MONEY.matcher(line);
+        while (matcher.find()) {
+            final String rawNumber = matcher.group().replace("$", "").replace(",", "").replace(" ", "").trim();
 
-            if (n.isEmpty()) continue;
+            if (rawNumber.isEmpty()) continue;
 
             // Drop lone "1" / "12" that often come from quantity lines like "1 $5.00".
-            if (!n.contains(".")) continue;
+            if (!rawNumber.contains(".")) continue;
 
-            out.add(n);
+            matches.add(rawNumber);
         }
 
-        return out;
+        return matches;
     }
 
 
     // ---------- public: extract all numbers for the verifier ----------
 
     /** Recognised keywords for verifier cross-checks (lowercased). */
-    private static final java.util.List<String> VERIFIER_KEYWORDS =
-            java.util.Arrays.asList("subtotal", "tax", "tip", "total", "amount", "balance", "due");
+    private static final List<String> VERIFIER_KEYWORDS =
+            Arrays.asList("subtotal", "tax", "tip", "total", "amount", "balance", "due");
 
 
     /**
@@ -487,25 +488,25 @@ public final class ReceiptParser {
      * which keeps a stray "TOTAL" header on a credit-card slip from
      * leaking down to a "Version 1.5.20" line 14 rows later.</p>
      */
-    public static java.util.List<DetectedNumber> extractAllNumbers(String rawText) {
-        java.util.List<DetectedNumber> out = new java.util.ArrayList<>();
+    public static List<DetectedNumber> extractAllNumbers(String rawText) {
+        final List<DetectedNumber> numbers = new ArrayList<>();
 
-        if (rawText == null || rawText.trim().isEmpty()) return out;
+        if (rawText == null || rawText.trim().isEmpty()) return numbers;
 
-        String[] lines = rawText.split("\\r?\\n");
+        final String[] lines = rawText.split("\\r?\\n");
 
-        String[] lineKeywords = new String[lines.length];
+        final String[] lineKeywords = new String[lines.length];
 
-        boolean[] hasNumber = new boolean[lines.length];
+        final boolean[] hasNumber = new boolean[lines.length];
 
-        for (int i = 0; i < lines.length; i++) {
-            hasNumber[i] = !extractNumbers(lines[i].trim()).isEmpty();
+        for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+            hasNumber[lineIndex] = !extractNumbers(lines[lineIndex].trim()).isEmpty();
         }
 
-        for (int i = 0; i < lines.length; i++) {
-            if (!hasNumber[i]) continue;
+        for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+            if (!hasNumber[lineIndex]) continue;
 
-            String line = lines[i].trim();
+            final String line = lines[lineIndex].trim();
 
             // Already a keyword on this line? Done.
             if (detectVerifierKeyword(line) != null) continue;
@@ -513,46 +514,45 @@ public final class ReceiptParser {
             // Otherwise search the immediately adjacent non-blank lines.
             // Walk left first, then right — each direction stops at the
             // first non-blank line (whether it's a number or just text).
-            String kw = nearestKeyword(lines, hasNumber, i, -1);
+            String keyword = nearestKeyword(lines, hasNumber, lineIndex, -1);
 
-            if (kw == null) kw = nearestKeyword(lines, hasNumber, i, +1);
+            if (keyword == null) keyword = nearestKeyword(lines, hasNumber, lineIndex, +1);
 
-            if (kw != null) lineKeywords[i] = kw;
+            if (keyword != null) lineKeywords[lineIndex] = keyword;
         }
 
-        for (int i = 0; i < lines.length; i++) {
-            if (!hasNumber[i]) continue;
+        for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+            if (!hasNumber[lineIndex]) continue;
 
-            String line = lines[i].trim();
+            final String line = lines[lineIndex].trim();
 
             // Same-line keyword wins over adjacent propagation.
-            String own = detectVerifierKeyword(line);
+            final String ownKeyword = detectVerifierKeyword(line);
 
-            String keyword;
-
-            if (own != null) {
-                keyword = own;
+            final String effectiveKeyword;
+            if (ownKeyword != null) {
+                effectiveKeyword = ownKeyword;
             } else {
-                keyword = lineKeywords[i];
+                effectiveKeyword = lineKeywords[lineIndex];
             }
 
-            List<String> nums = extractNumbers(line);
+            final List<String> numberStrings = extractNumbers(line);
 
-            for (String n : nums) {
+            for (String numberString : numberStrings) {
                 try {
-                    double v = Double.parseDouble(n);
+                    final double value = Double.parseDouble(numberString);
 
-                    if (v > 0) {
-                        out.add(new DetectedNumber(v, line, i, keyword));
+                    if (value > 0) {
+                        numbers.add(new DetectedNumber(value, line, lineIndex, effectiveKeyword));
                     }
                 } catch (NumberFormatException ignored) { }
             }
         }
 
-        Logger.i("Parser", "extractAllNumbers: " + out.size()
+        Logger.i("Parser", "extractAllNumbers: " + numbers.size()
                 + " numbers from " + lines.length + " lines");
 
-        return out;
+        return numbers;
     }
 
 
@@ -563,19 +563,22 @@ public final class ReceiptParser {
      */
     @Nullable
     private static String nearestKeyword(String[] lines, boolean[] hasNumber, int start, int dir) {
-        int j = start + dir;
-        while (j >= 0 && j < lines.length) {
-            String neighbor = lines[j].trim();
+        int cursor = start + dir;
+        while (cursor >= 0 && cursor < lines.length) {
+            final String neighbor = lines[cursor].trim();
 
-            if (neighbor.isEmpty()) { j += dir; continue; }
+            if (neighbor.isEmpty()) {
+                cursor += dir;
+                continue;
+            }
 
-            if (hasNumber[j]) return null;          // hit another number — stop
+            if (hasNumber[cursor]) return null;          // hit another number — stop
 
-            String kw = detectVerifierKeyword(neighbor);
+            final String keyword = detectVerifierKeyword(neighbor);
 
-            if (kw != null) return kw;              // found a keyword line
+            if (keyword != null) return keyword;          // found a keyword line
 
-            return null;                            // hit text, stop
+            return null;                                 // hit text, stop
         }
 
         return null;
@@ -584,10 +587,10 @@ public final class ReceiptParser {
 
     @Nullable
     private static String detectVerifierKeyword(String line) {
-        String lower = line.toLowerCase();
+        final String lowered = line.toLowerCase();
 
-        for (String k : VERIFIER_KEYWORDS) {
-            if (lower.contains(k)) return k;
+        for (String candidate : VERIFIER_KEYWORDS) {
+            if (lowered.contains(candidate)) return candidate;
         }
 
         return null;
@@ -614,70 +617,67 @@ public final class ReceiptParser {
      * to 0.0 (the auto-pick still works, just without the highlighted
      * priority).</p>
      */
-    public static java.util.List<DetectedNumber> extractAllNumbersWithVisualSignals(
+    public static List<DetectedNumber> extractAllNumbersWithVisualSignals(
             @Nullable android.graphics.Bitmap bitmap,
-            java.util.List<ReceiptOcr.OcrLine> ocrLines) {
-        java.util.List<DetectedNumber> out = new java.util.ArrayList<>();
+            List<ReceiptOcr.OcrLine> ocrLines) {
+        final List<DetectedNumber> numbers = new ArrayList<>();
 
-        if (ocrLines == null || ocrLines.isEmpty()) return out;
+        if (ocrLines == null || ocrLines.isEmpty()) return numbers;
 
 
-        int n = ocrLines.size();
+        final int lineCount = ocrLines.size();
 
-        String[] lineTexts = new String[n];
+        final String[] lineTexts = new String[lineCount];
 
-        boolean[] hasNumber = new boolean[n];
+        final boolean[] hasNumber = new boolean[lineCount];
 
-        for (int i = 0; i < n; i++) {
-            String t = ocrLines.get(i).text;
+        for (int lineIndex = 0; lineIndex < lineCount; lineIndex++) {
+            final String lineText = ocrLines.get(lineIndex).text;
 
-            if (t == null) {
-                lineTexts[i] = "";
+            if (lineText == null) {
+                lineTexts[lineIndex] = "";
             } else {
-                lineTexts[i] = t;
+                lineTexts[lineIndex] = lineText;
             }
 
-            hasNumber[i] = !extractNumbers(lineTexts[i].trim()).isEmpty();
+            hasNumber[lineIndex] = !extractNumbers(lineTexts[lineIndex].trim()).isEmpty();
         }
 
         // Same keyword-propagation as the text-only pass.
-        String[] lineKeywords = new String[n];
+        final String[] lineKeywords = new String[lineCount];
 
-        for (int i = 0; i < n; i++) {
-            if (!hasNumber[i]) continue;
+        for (int lineIndex = 0; lineIndex < lineCount; lineIndex++) {
+            if (!hasNumber[lineIndex]) continue;
 
-            String line = lineTexts[i].trim();
+            final String line = lineTexts[lineIndex].trim();
 
             if (detectVerifierKeyword(line) != null) continue;
 
-            String kw = nearestKeyword(lineTexts, hasNumber, i, -1);
+            String keyword = nearestKeyword(lineTexts, hasNumber, lineIndex, -1);
 
-            if (kw == null) kw = nearestKeyword(lineTexts, hasNumber, i, +1);
+            if (keyword == null) keyword = nearestKeyword(lineTexts, hasNumber, lineIndex, +1);
 
-            if (kw != null) lineKeywords[i] = kw;
+            if (keyword != null) lineKeywords[lineIndex] = keyword;
         }
 
 
         int emphasisedCount = 0;
 
-        int handwritingHits = 0;
+        for (int lineIndex = 0; lineIndex < lineCount; lineIndex++) {
+            if (!hasNumber[lineIndex]) continue;
 
-        for (int i = 0; i < n; i++) {
-            if (!hasNumber[i]) continue;
+            final String line = lineTexts[lineIndex].trim();
 
-            String line = lineTexts[i].trim();
+            final String ownKeyword = detectVerifierKeyword(line);
 
-            String own = detectVerifierKeyword(line);
-
-            String keyword;
-
-            if (own != null) {
-                keyword = own;
+            final String effectiveKeyword;
+            if (ownKeyword != null) {
+                effectiveKeyword = ownKeyword;
             } else {
-                keyword = lineKeywords[i];
+                effectiveKeyword = lineKeywords[lineIndex];
             }
 
-            ReceiptOcr.OcrLine ocrLine = ocrLines.get(i);
+            final ReceiptOcr.OcrLine ocrLine = ocrLines.get(lineIndex);
 
 
             // Try element-level first.
@@ -685,45 +685,29 @@ public final class ReceiptParser {
 
             if (ocrLine.elements != null) {
                 for (ReceiptOcr.OcrElement el : ocrLine.elements) {
-                    String elText;
-
+                    final String elementText;
                     if (el.text == null) {
-                        elText = "";
+                        elementText = "";
                     } else {
-                        elText = el.text.trim();
+                        elementText = el.text.trim();
                     }
 
-                    java.util.List<String> nums = extractNumbers(elText);
+                    final List<String> numberStrings = extractNumbers(elementText);
 
-                    for (String num : nums) {
+                    for (String numberString : numberStrings) {
                         try {
-                            double v = Double.parseDouble(num);
+                            final double value = Double.parseDouble(numberString);
 
-                            if (v <= 0) continue;
+                            if (value <= 0) continue;
 
-                            VisualSignalDetector.Signals sig = (bitmap != null && el.bbox != null)
+                            final VisualSignalDetector.Signals signals = (bitmap != null && el.bbox != null)
                                     ? VisualSignalDetector.detect(bitmap, el.bbox)
                                     : new VisualSignalDetector.Signals(0f, 0f);
 
-                            // If the user visually marked this number, ask
-                            // Tesseract to re-read the bbox. Handwritten
-                            // digits are exactly the case where ML Kit
-                            // returns garbage and the user pointed at it on
-                            // purpose, so trust the second opinion here.
-                            Double handwritingValue = null;
+                            numbers.add(new DetectedNumber(value, line, lineIndex, effectiveKeyword,
+                                    signals.highlightScore, signals.circleScore, el.bbox));
 
-                            if (sig.isEmphasised() && bitmap != null && el.bbox != null) {
-                                handwritingValue = HandwritingOcr.get().recognizeFirstNumber(bitmap, el.bbox);
-
-                                if (handwritingValue != null) handwritingHits++;
-                            }
-
-
-                            out.add(new DetectedNumber(v, line, i, keyword,
-                                    sig.highlightScore, sig.circleScore, el.bbox,
-                                    handwritingValue));
-
-                            if (sig.isEmphasised()) emphasisedCount++;
+                            if (signals.isEmphasised()) emphasisedCount++;
 
                             usedElement = true;
                         } catch (NumberFormatException ignored) { }
@@ -737,42 +721,31 @@ public final class ReceiptParser {
             // Fallback: line-level bbox for every money match on this
             // line. This handles the case where ML Kit emitted the
             // whole line as one element.
-            java.util.List<String> nums = extractNumbers(line);
+            final List<String> numberStrings = extractNumbers(line);
 
-            VisualSignalDetector.Signals sig = (bitmap != null && ocrLine.bbox != null)
+            final VisualSignalDetector.Signals signals = (bitmap != null && ocrLine.bbox != null)
                     ? VisualSignalDetector.detect(bitmap, ocrLine.bbox)
                     : new VisualSignalDetector.Signals(0f, 0f);
 
-            Double handwritingValue = null;
-
-            if (sig.isEmphasised() && bitmap != null && ocrLine.bbox != null) {
-                handwritingValue = HandwritingOcr.get().recognizeFirstNumber(bitmap, ocrLine.bbox);
-
-                if (handwritingValue != null) handwritingHits++;
-            }
-
-
-            for (String num : nums) {
+            for (String numberString : numberStrings) {
                 try {
-                    double v = Double.parseDouble(num);
+                    final double value = Double.parseDouble(numberString);
 
-                    if (v <= 0) continue;
+                    if (value <= 0) continue;
 
-                    out.add(new DetectedNumber(v, line, i, keyword,
-                            sig.highlightScore, sig.circleScore, ocrLine.bbox,
-                            handwritingValue));
+                    numbers.add(new DetectedNumber(value, line, lineIndex, effectiveKeyword,
+                            signals.highlightScore, signals.circleScore, ocrLine.bbox));
 
-                    if (sig.isEmphasised()) emphasisedCount++;
+                    if (signals.isEmphasised()) emphasisedCount++;
                 } catch (NumberFormatException ignored) { }
             }
         }
 
 
-        Logger.i("Parser", "extractAllNumbersWithVisualSignals: " + out.size()
-                + " numbers from " + n + " lines; " + emphasisedCount + " visually emphasised; "
-                + handwritingHits + " re-recognised by Tesseract (handwriting)");
+        Logger.i("Parser", "extractAllNumbersWithVisualSignals: " + numbers.size()
+                + " numbers from " + lineCount + " lines; " + emphasisedCount + " visually emphasised");
 
-        return out;
+        return numbers;
     }
 
 
@@ -810,7 +783,7 @@ public final class ReceiptParser {
         // or pen circle). This is the strongest "user marked this on
         // purpose" signal we have — the user went out of their way
         // to draw attention to it. Return the highest-emphasis one.
-        DetectedNumber emphasised = pickMostEmphasised(numbers);
+        final DetectedNumber emphasised = pickMostEmphasised(numbers);
 
         if (emphasised != null) {
             Logger.i("Parser", "pickCircledCandidate: VISUALLY EMPHASISED -> $"
@@ -826,12 +799,12 @@ public final class ReceiptParser {
         // almost always print "TOTAL  47.83" with the total number
         // on the same line, and that's also what a user circles 90%
         // of the time.
-        for (DetectedNumber n : numbers) {
-            if (n.keyword != null && isTotalKeyword(n.keyword)) {
+        for (DetectedNumber candidate : numbers) {
+            if (candidate.keyword != null && isTotalKeyword(candidate.keyword)) {
                 Logger.i("Parser", "pickCircledCandidate: TOTAL-line match -> $"
-                        + n.value + " (line " + n.lineIndex + " kw=" + n.keyword + ")");
+                        + candidate.value + " (line " + candidate.lineIndex + " kw=" + candidate.keyword + ")");
 
-                return n;
+                return candidate;
             }
         }
 
@@ -843,19 +816,19 @@ public final class ReceiptParser {
         // PriceClassifier (handled in the verifier pass).
         int maxLine = 0;
 
-        for (DetectedNumber n : numbers) {
-            if (n.lineIndex > maxLine) maxLine = n.lineIndex;
+        for (DetectedNumber candidate : numbers) {
+            if (candidate.lineIndex > maxLine) maxLine = candidate.lineIndex;
         }
 
-        int half = maxLine / 2;
+        final int halfIndex = maxLine / 2;
 
         DetectedNumber bottomLargest = null;
 
-        for (DetectedNumber n : numbers) {
-            if (n.lineIndex < half) continue;
+        for (DetectedNumber candidate : numbers) {
+            if (candidate.lineIndex < halfIndex) continue;
 
-            if (bottomLargest == null || n.value > bottomLargest.value) {
-                bottomLargest = n;
+            if (bottomLargest == null || candidate.value > bottomLargest.value) {
+                bottomLargest = candidate;
             }
         }
 
@@ -871,8 +844,8 @@ public final class ReceiptParser {
         // resort — gives the user a defensible default.
         DetectedNumber largest = numbers.get(0);
 
-        for (DetectedNumber n : numbers) {
-            if (n.value > largest.value) largest = n;
+        for (DetectedNumber candidate : numbers) {
+            if (candidate.value > largest.value) largest = candidate;
         }
 
         Logger.i("Parser", "pickCircledCandidate: receipt-wide largest -> $"
@@ -894,20 +867,20 @@ public final class ReceiptParser {
 
         float bestScore = 0f;
 
-        for (DetectedNumber n : numbers) {
-            if (!n.isVisuallyEmphasised()) continue;
+        for (DetectedNumber candidate : numbers) {
+            if (!candidate.isVisuallyEmphasised()) continue;
 
-            float score = (float) (n.highlightScore * 0.66 + n.circleScore * 0.34);
+            float combinedScore = (float) (candidate.highlightScore * 0.66 + candidate.circleScore * 0.34);
 
             // Tiny tie-breaker: numbers on a TOTAL keyword line win
             // ties so we don't pick an emphasised subtotal over a
             // non-emphasised total.
-            if (n.keyword != null && isTotalKeyword(n.keyword)) score += 0.01f;
+            if (candidate.keyword != null && isTotalKeyword(candidate.keyword)) combinedScore += 0.01f;
 
-            if (best == null || score > bestScore) {
-                best = n;
+            if (best == null || combinedScore > bestScore) {
+                best = candidate;
 
-                bestScore = score;
+                bestScore = combinedScore;
             }
         }
 
@@ -915,9 +888,9 @@ public final class ReceiptParser {
     }
 
 
-    private static boolean isTotalKeyword(String kw) {
-        return "total".equals(kw) || "amount".equals(kw)
-                || "balance".equals(kw) || "due".equals(kw)
-                || "sum".equals(kw) || "to pay".equals(kw);
+    private static boolean isTotalKeyword(String keyword) {
+        return "total".equals(keyword) || "amount".equals(keyword)
+                || "balance".equals(keyword) || "due".equals(keyword)
+                || "sum".equals(keyword) || "to pay".equals(keyword);
     }
 }

@@ -18,11 +18,11 @@ import java.util.Locale;
 
 /**
  * Stage 2 of the two-stage receipt-classifier: given a number that's
- * already known to be a price (see {@link PriceClassifier}), what's the
- * probability it's the receipt's total?
+ * already known to be a price (see {@link PriceClassifier}), what's
+ * the probability it's the receipt's total?
  *
- * <p>Implemented as a small logistic-regression classifier trained on
- * synthetic receipts. Feature vector:</p>
+ * <p>Implemented as a small logistic-regression classifier trained
+ * on synthetic receipts. Feature vector:</p>
  * <ul>
  *   <li>{@code hasTotalKeyword}     – 1 if the line has "total / amount / due / balance"</li>
  *   <li>{@code hasComponentKeyword} – 1 if the line has "subtotal / tax / tip"</li>
@@ -35,24 +35,37 @@ import java.util.Locale;
  *   <li>{@code looksLikeCode}       – 1 if integer and >= 100 (auth code, txn id)</li>
  *   <li>{@code highlightScore}      – 0..1, fraction of yellow pixels in the bounding box</li>
  *   <li>{@code circleScore}         – 0..1, ring-vs-core dark pixel ratio (pen circle heuristic)</li>
- *   <li>{@code isHandwritten}       – 1 if the value came from Tesseract re-OCR (handwriting)
- *                                    on a visually-emphasised bbox, 0 otherwise</li>
  * </ul>
  *
  * <p>The two visual-signal features are weighted strongly positive:
  * a human deliberately marked a number with highlighter or a pen
  * circle, and that's the strongest "this is the total" signal we
- * can get from the source photo. The {@code isHandwritten} feature
- * is the "and the user wrote it by hand" corollary: a hand-written
- * digit the user pointed at with a highlighter is the highest-trust
- * total the pipeline can produce.</p>
+ * can get from the source photo.</p>
  *
  * <p>Output: sigmoid(weights · features + bias) ∈ [0, 1] — interpretable
  * as P(this price is the real total).</p>
  */
 public final class LinearLearner {
 
-    private LinearLearner() {}
+    private static final String LOG_TAG = "TotalLearner";
+    private static final String BIAS_LABEL = "bias";
+    private static final String K_TOTAL = "total";
+    private static final String K_AMOUNT = "amount";
+    private static final String K_BALANCE = "balance";
+    private static final String K_DUE = "due";
+    private static final String K_SUBTOTAL = "subtotal";
+    private static final String K_TAX = "tax";
+    private static final String K_TIP = "tip";
+    private static final String EMPTY_KEYWORD = "";
+    private static final String EMPTY_LINE = "";
+    private static final double VALUE_TOLERANCE = 0.005;
+    private static final double SUBTOTAL_FLOOR = 0.01;
+    private static final double CLOSE_TO_SUM_TOLERANCE = 1.00;
+    private static final double LARGE_CODE_MIN = 100.0;
+    private static final double LARGE_CODE_MAX = 1_000_000.0;
+    private static final int EPOCHS = 800;
+    private static final double LEARNING_RATE = 0.5;
+    private static final double L2_LAMBDA = 0.01;
 
 
     public static final String[] FEATURE_NAMES = {
@@ -66,181 +79,137 @@ public final class LinearLearner {
             "looksLikeDate",
             "looksLikeCode",
             "highlightScore",
-            "circleScore",
-            "isHandwritten"
+            "circleScore"
     };
 
 
     public static final int FEATURE_COUNT = FEATURE_NAMES.length;
 
 
-    public static int featureCount() { return FEATURE_COUNT; }
+    public static int featureCount() {
+        return FEATURE_COUNT;
+    }
 
 
     // ---------- feature extraction ----------
 
-    public static double[] extractFeatures(@NonNull DetectedNumber n,
-                                           @NonNull List<DetectedNumber> all,
+    public static double[] extractFeatures(@NonNull DetectedNumber candidate,
+                                           @NonNull List<DetectedNumber> allDetected,
                                            Double subtotal,
                                            Double tax,
                                            Double tip,
                                            int totalLines) {
-        double[] f = new double[FEATURE_COUNT];
+        final double[] features = new double[FEATURE_COUNT];
 
-        String kw;
+        final String keyword = extractKeyword(candidate);
+        final boolean hasTotalKeyword = isTotalKeyword(keyword);
+        final boolean hasComponentKeyword = isComponentKeyword(keyword);
 
-        if (n.keyword == null) {
-            kw = "";
-        } else {
-            kw = n.keyword.toLowerCase();
-        }
+        setBinaryFeature(features, 0, hasTotalKeyword);
+        setBinaryFeature(features, 1, hasComponentKeyword);
 
-        boolean hasTotal = kw.equals("total") || kw.equals("amount")
-                || kw.equals("balance") || kw.equals("due");
+        final double largestOtherValue = findLargestOtherValue(candidate, allDetected);
+        setBinaryFeature(features, 2, largestOtherValue <= 0.0 || candidate.value >= largestOtherValue);
 
-        boolean hasComponent = kw.equals("subtotal") || kw.equals("tax") || kw.equals("tip");
+        setBinaryFeature(features, 3, totalLines > 0 && candidate.lineIndex >= (totalLines / 2.0));
+        setBinaryFeature(features, 4, candidate.value != Math.floor(candidate.value));
+        setBinaryFeature(features, 5, subtotal != null && candidate.value < subtotal - SUBTOTAL_FLOOR);
 
-        if (hasTotal) {
-            f[0] = 1.0;
-        } else {
-            f[0] = 0.0;
-        }
+        setBinaryFeature(features, 6, isCloseToSubPlusTax(candidate.value, subtotal, tax, tip));
 
-        if (hasComponent) {
-            f[1] = 1.0;
-        } else {
-            f[1] = 0.0;
-        }
+        final String line = extractLine(candidate);
+        setBinaryFeature(features, 7, line.matches(".*\\d+[/\\-]\\d+.*"));
 
-
-        double maxOther = 0;
-
-        for (DetectedNumber m : all) {
-            if (m == n) continue;
-
-            if (Math.abs(m.value - n.value) < 0.005) continue;
-
-            if (m.value > maxOther) maxOther = m.value;
-        }
-
-        if (maxOther <= 0 || n.value >= maxOther) {
-            f[2] = 1.0;
-        } else {
-            f[2] = 0.0;
-        }
-
-        if (totalLines > 0 && n.lineIndex >= (totalLines / 2.0)) {
-            f[3] = 1.0;
-        } else {
-            f[3] = 0.0;
-        }
-
-        if (n.value != Math.floor(n.value)) {
-            f[4] = 1.0;
-        } else {
-            f[4] = 0.0;
-        }
-
-        if (subtotal != null && n.value < subtotal - 0.01) {
-            f[5] = 1.0;
-        } else {
-            f[5] = 0.0;
-        }
-
-
-        if (subtotal != null) {
-            double taxVal;
-
-            if (tax == null) {
-                taxVal = 0.0;
-            } else {
-                taxVal = tax;
-            }
-
-            double tipVal;
-
-            if (tip == null) {
-                tipVal = 0.0;
-            } else {
-                tipVal = tip;
-            }
-
-            double predicted = subtotal + taxVal + tipVal;
-
-            if (predicted > 0 && Math.abs(n.value - predicted) <= 1.00) {
-                f[6] = 1.0;
-            } else {
-                f[6] = 0.0;
-            }
-        } else {
-            f[6] = 0.0;
-        }
-
-
-        String line;
-
-        if (n.line == null) {
-            line = "";
-        } else {
-            line = n.line;
-        }
-
-        if (line.matches(".*\\d+[/\\-]\\d+.*")) {
-            f[7] = 1.0;
-        } else {
-            f[7] = 0.0;
-        }
-
-        boolean integer = (n.value == Math.floor(n.value));
-
-        if (integer && n.value >= 100 && n.value < 1_000_000) {
-            f[8] = 1.0;
-        } else {
-            f[8] = 0.0;
-        }
-
+        final boolean isInteger = candidate.value == Math.floor(candidate.value);
+        setBinaryFeature(features, 8, isInteger
+                && candidate.value >= LARGE_CODE_MIN
+                && candidate.value < LARGE_CODE_MAX);
 
         // Visual signals: pass the raw 0..1 scores straight through.
         // The strong positive weight in the trained model will lift
         // emphasised numbers above non-emphasised ones even when the
         // text-based features are noisy.
-        f[9]  = clamp01(n.highlightScore);
+        features[9] = clamp01(candidate.highlightScore);
+        features[10] = clamp01(candidate.circleScore);
 
-        f[10] = clamp01(n.circleScore);
-
-
-        // 12th feature: handwriting. True when the value was re-OCR'd
-        // by Tesseract on a visually-emphasised bbox — i.e. the user
-        // wrote a number in pen and pointed at it. This is the
-        // strongest "this is the total" signal we have.
-        if (n.isHandwrittenAndMarked()) {
-            f[11] = 1.0;
-        } else {
-            f[11] = 0.0;
-        }
-
-
-        return f;
+        return features;
     }
 
 
-    private static double clamp01(double v) {
-        if (v < 0) return 0;
+    private static String extractKeyword(DetectedNumber number) {
+        if (number.keyword == null) {
+            return EMPTY_KEYWORD;
+        }
+        return number.keyword.toLowerCase();
+    }
 
-        if (v > 1) return 1;
 
-        return v;
+    private static String extractLine(DetectedNumber number) {
+        if (number.line == null) {
+            return EMPTY_LINE;
+        }
+        return number.line;
+    }
+
+
+    private static boolean isTotalKeyword(String keyword) {
+        return keyword.equals(K_TOTAL)
+                || keyword.equals(K_AMOUNT)
+                || keyword.equals(K_BALANCE)
+                || keyword.equals(K_DUE);
+    }
+
+
+    private static boolean isComponentKeyword(String keyword) {
+        return keyword.equals(K_SUBTOTAL) || keyword.equals(K_TAX) || keyword.equals(K_TIP);
+    }
+
+
+    private static double findLargestOtherValue(DetectedNumber candidate, List<DetectedNumber> all) {
+        double largestOther = 0.0;
+        for (final DetectedNumber other : all) {
+            if (other == candidate) continue;
+            if (Math.abs(other.value - candidate.value) < VALUE_TOLERANCE) continue;
+            if (other.value > largestOther) {
+                largestOther = other.value;
+            }
+        }
+        return largestOther;
+    }
+
+
+    private static boolean isCloseToSubPlusTax(double value, Double subtotal, Double tax, Double tip) {
+        if (subtotal == null) return false;
+        final double taxValue = (tax == null) ? 0.0 : tax;
+        final double tipValue = (tip == null) ? 0.0 : tip;
+        final double predictedTotal = subtotal + taxValue + tipValue;
+        return predictedTotal > 0.0
+                && Math.abs(value - predictedTotal) <= CLOSE_TO_SUM_TOLERANCE;
+    }
+
+
+    private static void setBinaryFeature(double[] features, int index, boolean condition) {
+        if (condition) {
+            features[index] = 1.0;
+        } else {
+            features[index] = 0.0;
+        }
+    }
+
+
+    private static double clamp01(double value) {
+        if (value < 0.0) return 0.0;
+        if (value > 1.0) return 1.0;
+        return value;
     }
 
 
     // ---------- trained model ----------
 
-    private static final String LOG_TAG = "TotalLearner";
-
-
-    private static volatile LogisticRegression.Trained model;
-
+    private static volatile LogisticRegression.Trained trainedModel;
     private static volatile boolean trained = false;
+    private static final LogisticRegression.HyperParams HYPER_PARAMS =
+            new LogisticRegression.HyperParams(EPOCHS, LEARNING_RATE, L2_LAMBDA);
 
 
     private static synchronized void trainIfNeeded() {
@@ -248,67 +217,59 @@ public final class LinearLearner {
 
         Logger.i(LOG_TAG, "Training on " + TRAINING_DATA.size() + " examples, "
                 + FEATURE_COUNT + " features, "
-                + HyperParamsLog(HyperParamsForTraining));
+                + formatHyperParams(HYPER_PARAMS));
 
-        model = LogisticRegression.train(LOG_TAG, FEATURE_COUNT, TRAINING_DATA, HyperParamsForTraining);
-
+        trainedModel = LogisticRegression.train(LOG_TAG, FEATURE_COUNT, TRAINING_DATA, HYPER_PARAMS);
         trained = true;
-
         Logger.i(LOG_TAG, "Training complete");
-
-        StringBuilder wlog = new StringBuilder("Learned weights:\n");
-
-        for (int i = 0; i < FEATURE_COUNT; i++) {
-            wlog.append(String.format(Locale.US, "  %-22s = %+.3f%n", FEATURE_NAMES[i], model.weights[i]));
-        }
-
-        wlog.append(String.format(Locale.US, "  %-22s = %+.3f", "bias", model.bias));
-
-        Logger.i(LOG_TAG, wlog.toString());
+        Logger.i(LOG_TAG, buildWeightsLog(trainedModel));
     }
 
 
-    private static final LogisticRegression.HyperParams HyperParamsForTraining =
-            new LogisticRegression.HyperParams(800, 0.5, 0.01);
+    private static String buildWeightsLog(LogisticRegression.Trained model) {
+        final StringBuilder logBuilder = new StringBuilder("Learned weights:\n");
+        for (int i = 0; i < FEATURE_COUNT; i++) {
+            logBuilder.append(String.format(Locale.US, "  %-22s = %+.3f%n",
+                    FEATURE_NAMES[i], model.weights[i]));
+        }
+        logBuilder.append(String.format(Locale.US, "  %-22s = %+.3f", BIAS_LABEL, model.bias));
+        return logBuilder.toString();
+    }
 
 
-    private static String HyperParamsLog(LogisticRegression.HyperParams hp) {
-        return String.format(Locale.US, "epochs=%d lr=%.2f l2=%.3f", hp.epochs, hp.learningRate, hp.l2Lambda);
+    private static String formatHyperParams(LogisticRegression.HyperParams params) {
+        return String.format(Locale.US, "epochs=%d lr=%.2f l2=%.3f",
+                params.epochs, params.learningRate, params.l2Lambda);
     }
 
 
     public static double predictProbability(double[] features) {
         trainIfNeeded();
-
-        return LogisticRegression.predictProbability(model, features);
+        return LogisticRegression.predictProbability(trainedModel, features);
     }
 
 
     public static double predictLogit(double[] features) {
         trainIfNeeded();
-
-        return LogisticRegression.predictLogit(model, features);
+        return LogisticRegression.predictLogit(trainedModel, features);
     }
 
 
     public static double[] getWeights() {
         trainIfNeeded();
-
-        return model.weights.clone();
+        return trainedModel.weights.clone();
     }
 
 
     public static double getBias() {
         trainIfNeeded();
-
-        return model.bias;
+        return trainedModel.bias;
     }
 
 
     public static String explain(double[] features) {
         trainIfNeeded();
-
-        return LogisticRegression.explain(FEATURE_NAMES, model, features);
+        return LogisticRegression.explain(FEATURE_NAMES, trainedModel, features);
     }
 
 
@@ -318,73 +279,55 @@ public final class LinearLearner {
 
 
     /**
-     * 11 features per example. The visual-signal features are present
-     * in every example, but most examples set them to 0 to match the
-     * historical "no visual signal" baseline. The handful of emphasised
-     * positive examples (with highlight=0.8 or circle=0.5) teach the
-     * model to give those signals a strong positive weight.
+     * 11 features per example (the 11 in {@link #FEATURE_NAMES}). The
+     * visual-signal features are present in every example, but most
+     * examples set them to 0 to match the historical "no visual
+     * signal" baseline. The handful of emphasised positive examples
+     * (with highlight=0.8 or circle=0.5) teach the model to give
+     * those signals a strong positive weight.
      */
     private static List<LogisticRegression.Example> buildTrainingData() {
-        List<LogisticRegression.Example> ex = new ArrayList<>();
-
+        final List<LogisticRegression.Example> examples = new ArrayList<>();
 
         // === POSITIVE (label=1): looks like a real total ===
-        // hasTotal, hasComp, isLargest, inBottom, hasDec, belowSub, close, date, code, hl, cr, handwriting
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 1,1, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 0, 0, 0, 0, 0, 0}, 1.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,0, 1, 0, 1, 0, 0, 0, 0, 0}, 1.0));
-
-        // Highlighted (yellow highlighter) — the visual signal alone is enough to call it a total.
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.8, 0.0, 0}, 1.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.6, 0.0, 0}, 1.0));
-
+        // hasTotal, hasComp, isLargest, inBottom, hasDec, belowSub,
+        // close, date, code, hl, cr
+        addPositive(examples, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0);
+        addPositive(examples, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0);
+        addPositive(examples, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0);
+        addPositive(examples, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0);
+        addPositive(examples, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0);
+        addPositive(examples, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0);
+        addPositive(examples, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0);
+        // Highlighted (yellow highlighter) — the visual signal alone
+        // is enough to call it a total.
+        addPositive(examples, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0.8, 0.0);
+        addPositive(examples, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0.6, 0.0);
         // Circled (pen circle around a number) — same: strong positive.
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.0, 0.6, 0}, 1.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.0, 0.5, 0}, 1.0));
-
-        // Handwritten + marked: the user wrote a number in pen AND pointed
-        // at it. The value came from Tesseract (so ML Kit's print-OCR
-        // didn't see it as a number, and the hasTotalKeyword/isLargest
-        // features are often 0 because the line text is unrecognised
-        // garbage). The model should learn to give these a strong
-        // "this is the total" signal anyway, because a human told us so.
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 0, 0, 0, 0, 0.7, 0.0, 1}, 1.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,1, 1, 0, 0, 0, 0, 0.0, 0.6, 1}, 1.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{1,0, 1,1, 1, 0, 1, 0, 0, 0.5, 0.4, 1}, 1.0));
-
+        addPositive(examples, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0.0, 0.6);
+        addPositive(examples, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0.0, 0.5);
 
         // === NEGATIVE (label=0): NOT a total ===
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 0, 0, 0, 0, 0, 0, 0}, 0.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0, 0, 0, 0}, 0.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,0, 1, 1, 0, 0, 0, 0, 0, 0}, 0.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 1, 1, 0, 0, 0, 0, 0, 0}, 0.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 1, 0, 0, 0, 0}, 0.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 1, 0, 0, 0}, 0.0));
-
-        ex.add(new LogisticRegression.Example(new double[]{0,0, 0,0, 0, 0, 0, 0, 0, 0, 0, 0}, 0.0));
-
+        addNegative(examples, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0);
+        addNegative(examples, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0);
+        addNegative(examples, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0);
+        addNegative(examples, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0);
+        addNegative(examples, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0);
+        addNegative(examples, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0);
+        addNegative(examples, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         // A non-emphasised subtotal is still a subtotal, not a total.
-        ex.add(new LogisticRegression.Example(new double[]{0,1, 0,1, 1, 0, 0, 0, 0, 0, 0, 0}, 0.0));
+        addNegative(examples, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0);
 
-        return ex;
+        return examples;
+    }
+
+
+    private static void addPositive(List<LogisticRegression.Example> examples, double... featureValues) {
+        examples.add(new LogisticRegression.Example(featureValues, 1.0));
+    }
+
+
+    private static void addNegative(List<LogisticRegression.Example> examples, double... featureValues) {
+        examples.add(new LogisticRegression.Example(featureValues, 0.0));
     }
 }

@@ -32,136 +32,129 @@ import com.example.receipttracker.data.BankTransaction;
 import com.example.receipttracker.util.MoneyUtils;
 
 
+import java.util.Collections;
+
 import java.util.List;
 
 
+/**
+ * Read-only list of every bank transaction the user has entered. Tapping a
+ * row opens the {@link AddTransactionActivity} in "edit" mode.
+ */
 public class TransactionListActivity extends AppCompatActivity {
 
-    private RecyclerView rv;
-
-    private View tvEmpty;
-
-    private TxAdapter adapter;
+    private RecyclerView recyclerView;
+    private View emptyView;
+    private TransactionAdapter adapter;
 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         setContentView(R.layout.activity_transaction_list);
 
-        rv = findViewById(R.id.rv);
+        recyclerView = findViewById(R.id.rv);
+        emptyView = findViewById(R.id.tv_empty);
+        recyclerView.setLayoutManager(new LinearLayoutManager(this));
+        adapter = new TransactionAdapter();
+        recyclerView.setAdapter(adapter);
 
-        tvEmpty = findViewById(R.id.tv_empty);
-
-        rv.setLayoutManager(new LinearLayoutManager(this));
-
-        adapter = new TxAdapter();
-
-        rv.setAdapter(adapter);
-
-
-        // LiveData: re-renders on every insert/update/delete without an onResume hook.
         AppDatabase.get(this).bankTransactionDao().getAllLive().observe(this, this::render);
     }
 
 
-    private void render(List<BankTransaction> data) {
-        adapter.set(data);
-
-        boolean empty = data == null || data.isEmpty();
-
-        if (empty) {
-            tvEmpty.setVisibility(View.VISIBLE);
+    private void render(List<BankTransaction> transactions) {
+        adapter.set(transactions);
+        final boolean isEmpty = transactions == null || transactions.isEmpty();
+        if (isEmpty) {
+            emptyView.setVisibility(View.VISIBLE);
         } else {
-            tvEmpty.setVisibility(View.GONE);
+            emptyView.setVisibility(View.GONE);
         }
-
-        if (empty) {
-            rv.setVisibility(View.GONE);
+        if (isEmpty) {
+            recyclerView.setVisibility(View.GONE);
         } else {
-            rv.setVisibility(View.VISIBLE);
+            recyclerView.setVisibility(View.VISIBLE);
         }
     }
 
 
-    class TxAdapter extends RecyclerView.Adapter<TxAdapter.VH> {
-        private List<BankTransaction> data = java.util.Collections.emptyList();
+    /** RecyclerView adapter for the transaction list. */
+    class TransactionAdapter extends RecyclerView.Adapter<TransactionAdapter.ViewHolder> {
 
-        void set(List<BankTransaction> d) {
-            if (d == null) {
-                this.data = java.util.Collections.emptyList();
+        // MUTABLE: re-set in set().
+        private List<BankTransaction> data = Collections.emptyList();
+
+
+        void set(List<BankTransaction> newData) {
+            if (newData == null) {
+                this.data = Collections.emptyList();
             } else {
-                this.data = d;
+                this.data = newData;
             }
-
             notifyDataSetChanged();
         }
 
 
-        @NonNull @Override
-        public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            View v = LayoutInflater.from(parent.getContext())
+        @NonNull
+        @Override
+        public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            final View inflatedView = LayoutInflater.from(parent.getContext())
                     .inflate(R.layout.item_transaction, parent, false);
-
-            return new VH(v);
+            return new ViewHolder(inflatedView);
         }
 
 
         @Override
-        public void onBindViewHolder(@NonNull VH h, int position) {
-            BankTransaction t = data.get(position);
+        public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
+            final BankTransaction transaction = data.get(position);
+            holder.description.setText(transaction.description);
 
-            h.description.setText(t.description);
-
-            String account;
-
-            if (t.account == null || t.account.isEmpty()) {
-                account = "";
+            final String accountSuffix;
+            if (transaction.account == null || transaction.account.isEmpty()) {
+                accountSuffix = "";
             } else {
-                account = " - " + t.account;
+                accountSuffix = " - " + transaction.account;
+            }
+            final String dateWithAccount = MoneyUtils.formatDate(transaction.dateMillis) + accountSuffix;
+            holder.dateAccount.setText(dateWithAccount);
+
+            holder.amount.setText(MoneyUtils.format(transaction.amount));
+
+            if (transaction.matchGroupId != null) {
+                holder.status.setText(R.string.receipt_match_status_matched);
+                holder.status.setTextColor(getColor(R.color.ok));
+            } else {
+                holder.status.setText(R.string.receipt_match_status_unmatched);
+                holder.status.setTextColor(getColor(R.color.warn));
             }
 
-            h.dateAccount.setText(MoneyUtils.formatDate(t.dateMillis) + account);
-
-            h.amount.setText(MoneyUtils.format(t.amount));
-
-            if (t.matchGroupId != null) {
-                h.status.setText(R.string.receipt_match_status_matched);
-
-                h.status.setTextColor(getColor(R.color.ok));
-            } else {
-                h.status.setText(R.string.receipt_match_status_unmatched);
-
-                h.status.setTextColor(getColor(R.color.warn));
-            }
-
-            h.itemView.setOnClickListener(v -> {
-                Intent i = new Intent(TransactionListActivity.this, AddTransactionActivity.class);
-
-                i.putExtra(AddTransactionActivity.EXTRA_TRANSACTION_ID, t.id);
-
-                startActivity(i);
+            holder.itemView.setOnClickListener(clickedView -> {
+                final Intent editIntent = new Intent(TransactionListActivity.this, AddTransactionActivity.class);
+                editIntent.putExtra(AddTransactionActivity.EXTRA_TRANSACTION_ID, transaction.id);
+                startActivity(editIntent);
             });
         }
 
 
-        @Override public int getItemCount() { return data.size(); }
+        @Override
+        public int getItemCount() {
+            return data.size();
+        }
 
 
-        class VH extends RecyclerView.ViewHolder {
-            final TextView description, dateAccount, status, amount;
+        class ViewHolder extends RecyclerView.ViewHolder {
+            final TextView description;
+            final TextView dateAccount;
+            final TextView status;
+            final TextView amount;
 
-            VH(View v) {
-                super(v);
-
-                description = v.findViewById(R.id.tv_description);
-
-                dateAccount = v.findViewById(R.id.tv_date_account);
-
-                status = v.findViewById(R.id.tv_status);
-
-                amount = v.findViewById(R.id.tv_amount);
+            ViewHolder(View itemView) {
+                super(itemView);
+                description = itemView.findViewById(R.id.tv_description);
+                dateAccount = itemView.findViewById(R.id.tv_date_account);
+                status = itemView.findViewById(R.id.tv_status);
+                amount = itemView.findViewById(R.id.tv_amount);
             }
         }
     }

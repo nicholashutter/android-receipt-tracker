@@ -39,232 +39,202 @@ import com.google.android.material.button.MaterialButton;
 import java.util.List;
 
 
+/**
+ * Bulk-export of every receipt (or just the newest) into a SAF tree the
+ * user picks. Each receipt becomes one {@code .jpg} + one {@code .json}
+ * pair via {@link ReceiptExporter}.
+ */
 public class ExportActivity extends AppCompatActivity {
 
-    private TextView tvFolder, tvStatus;
+    private static final String TAG = "Export";
+    private static final String MSG_NO_FOLDER = "Pick a folder first";
+    private static final String MSG_NO_RECEIPTS = "No receipts to export";
+    private static final String MSG_FOLDER_UNAVAILABLE = "Folder not accessible";
+    private static final String MSG_EXPORTING = "Exporting...";
+    private static final String MSG_EXPORTING_NEWEST = "Exporting newest...";
+    private static final String MSG_NO_FOLDER_SELECTED = "No folder selected";
 
-    private MaterialButton btnPick, btnExport, btnExportAll;
 
+    private TextView folderView;
+    private TextView statusView;
+    private MaterialButton pickButton;
+    private MaterialButton exportButton;
+    private MaterialButton exportAllButton;
 
+    // MUTABLE: set when the user picks a tree URI.
     private Uri treeUri;
 
-    private AppDatabase db;
-
-    private final AppExecutors exec = AppExecutors.get();
+    private AppDatabase database;
+    private final AppExecutors executors = AppExecutors.get();
 
 
     private final ActivityResultLauncher<Uri> pickTree =
-            registerForActivityResult(new ActivityResultContracts.OpenDocumentTree(), uri -> {
-                if (uri != null) {
-                    Logger.i("Export", "User picked folder: " + uri);
-
-                    // Persist permission across reboots
-                    getContentResolver().takePersistableUriPermission(
-                            uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-
-                    treeUri = uri;
-
-                    renderFolder();
-                } else {
-                    Logger.w("Export", "Folder picker returned null");
+            registerForActivityResult(new ActivityResultContracts.OpenDocumentTree(), pickedUri -> {
+                if (pickedUri == null) {
+                    Logger.w(TAG, "Folder picker returned null");
+                    return;
                 }
+                Logger.i(TAG, "User picked folder: " + pickedUri);
+                // Persist permission across reboots.
+                getContentResolver().takePersistableUriPermission(
+                        pickedUri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                treeUri = pickedUri;
+                renderFolder();
             });
 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         setContentView(R.layout.activity_export);
 
+        folderView = findViewById(R.id.tv_folder);
+        statusView = findViewById(R.id.tv_status);
+        pickButton = findViewById(R.id.btn_pick);
+        exportButton = findViewById(R.id.btn_export);
+        exportAllButton = findViewById(R.id.btn_export_all);
 
-        tvFolder = findViewById(R.id.tv_folder);
+        database = AppDatabase.get(this);
 
-        tvStatus = findViewById(R.id.tv_status);
-
-        btnPick = findViewById(R.id.btn_pick);
-
-        btnExport = findViewById(R.id.btn_export);
-
-        btnExportAll = findViewById(R.id.btn_export_all);
-
-
-        db = AppDatabase.get(this);
-
-
-        btnPick.setOnClickListener(v -> pickTree.launch(null));
-
-        btnExport.setEnabled(false);
-
-        btnExport.setOnClickListener(v -> exportNewest());
-
-        btnExportAll.setOnClickListener(v -> exportAll());
+        pickButton.setOnClickListener(clickedView -> pickTree.launch(null));
+        exportButton.setEnabled(false);
+        exportButton.setOnClickListener(clickedView -> exportNewest());
+        exportAllButton.setOnClickListener(clickedView -> exportAll());
     }
 
 
     private void renderFolder() {
         if (treeUri == null) {
-            tvFolder.setText("No folder selected");
-
-            btnExport.setEnabled(false);
-
+            folderView.setText(MSG_NO_FOLDER_SELECTED);
+            exportButton.setEnabled(false);
             return;
         }
-
-        DocumentFile tree = DocumentFile.fromTreeUri(this, treeUri);
-
-        String folderName;
-
+        final DocumentFile tree = DocumentFile.fromTreeUri(this, treeUri);
+        final String folderLabel;
         if (tree == null) {
-            folderName = treeUri.toString();
+            folderLabel = treeUri.toString();
         } else {
-            folderName = tree.getName();
+            folderLabel = tree.getName();
         }
-
-        tvFolder.setText(folderName);
-
-        btnExport.setEnabled(true);
+        folderView.setText(folderLabel);
+        exportButton.setEnabled(true);
     }
 
 
     private void exportAll() {
         if (treeUri == null) {
-            Toast.makeText(this, "Pick a folder first", Toast.LENGTH_SHORT).show();
-
+            Toast.makeText(this, MSG_NO_FOLDER, Toast.LENGTH_SHORT).show();
             return;
         }
-
         Logger.section("EXPORT ALL");
+        Logger.i(TAG, "exportAll: treeUri=" + treeUri);
+        exportAllButton.setEnabled(false);
+        statusView.setText(MSG_EXPORTING);
 
-        Logger.i("Export", "exportAll: treeUri=" + treeUri);
+        final Uri targetUri = treeUri;
+        executors.diskIO().execute(() -> {
+            final List<Receipt> allReceipts = database.receiptDao().getAll();
+            Logger.i(TAG, "exportAll: " + allReceipts.size() + " receipts to export");
 
-        btnExportAll.setEnabled(false);
-
-        tvStatus.setText("Exporting...");
-
-        final Uri uri = treeUri;
-
-        exec.diskIO().execute(() -> {
-            List<Receipt> all = db.receiptDao().getAll();
-
-            Logger.i("Export", "exportAll: " + all.size() + " receipts to export");
-
-            int ok = 0, fail = 0;
-
-            DocumentFile tree = DocumentFile.fromTreeUri(ExportActivity.this, uri);
-
+            final DocumentFile tree = DocumentFile.fromTreeUri(ExportActivity.this, targetUri);
+            final int[] counts;
             if (tree == null) {
-                Logger.e("Export", "exportAll: fromTreeUri returned null");
-
-                int[] result = new int[]{0, all.size()};
-
-                exec.mainThread().execute(() -> finishExportAll(result));
-
-                return;
+                Logger.e(TAG, "exportAll: fromTreeUri returned null");
+                counts = new int[]{0, allReceipts.size()};
+            } else {
+                counts = exportEachReceipt(allReceipts, tree);
             }
 
-            for (Receipt r : all) {
-                try {
-                    ReceiptExporter.export(ExportActivity.this, tree, r);
-
-                    ok++;
-                } catch (Exception e) {
-                    fail++;
-
-                    Logger.e("Export", "Failed to export receipt id=" + r.id, e);
-                }
-            }
-
-            int[] result = new int[]{ok, fail};
-
-            exec.mainThread().execute(() -> finishExportAll(result));
+            executors.mainThread().execute(() -> finishExportAll(counts));
         });
     }
 
 
+    /** Returns {@code [okCount, failCount]} after exporting every receipt. */
+    private int[] exportEachReceipt(List<Receipt> receipts, DocumentFile tree) {
+        int okCount = 0;
+        int failCount = 0;
+        for (final Receipt receipt : receipts) {
+            try {
+                ReceiptExporter.export(ExportActivity.this, tree, receipt);
+                okCount++;
+            } catch (Exception exportFailure) {
+                failCount++;
+                Logger.e(TAG, "Failed to export receipt id=" + receipt.id, exportFailure);
+            }
+        }
+        return new int[]{okCount, failCount};
+    }
+
+
     private void finishExportAll(int[] counts) {
-        btnExportAll.setEnabled(true);
-
-        tvStatus.setText("Exported " + counts[0] + " receipt(s). Failed: " + counts[1]);
-
-        Toast.makeText(ExportActivity.this,
-                "Exported " + counts[0] + " receipt(s)", Toast.LENGTH_LONG).show();
+        exportAllButton.setEnabled(true);
+        final int ok = counts[0];
+        final int fail = counts[1];
+        final String statusLine = "Exported " + ok + " receipt(s). Failed: " + fail;
+        statusView.setText(statusLine);
+        Toast.makeText(this, "Exported " + ok + " receipt(s)", Toast.LENGTH_LONG).show();
     }
 
 
     private void exportNewest() {
         if (treeUri == null) {
-            Toast.makeText(this, "Pick a folder first", Toast.LENGTH_SHORT).show();
-
+            Toast.makeText(this, MSG_NO_FOLDER, Toast.LENGTH_SHORT).show();
             return;
         }
+        Logger.i(TAG, "exportNewest clicked");
+        exportButton.setEnabled(false);
+        statusView.setText(MSG_EXPORTING_NEWEST);
 
-        Logger.i("Export", "exportNewest clicked");
-
-        btnExport.setEnabled(false);
-
-        tvStatus.setText("Exporting newest...");
-
-        final Uri uri = treeUri;
-
-        final String[] msg = new String[1];
-
-        exec.diskIO().execute(() -> {
-            Receipt r = newestReceipt();
-
-            if (r == null) {
-                msg[0] = "No receipts to export";
+        final Uri targetUri = treeUri;
+        executors.diskIO().execute(() -> {
+            final Receipt newest = newestReceipt();
+            final String resultMessage;
+            if (newest == null) {
+                resultMessage = MSG_NO_RECEIPTS;
             } else {
-                DocumentFile tree = DocumentFile.fromTreeUri(ExportActivity.this, uri);
-
-                if (tree == null) {
-                    msg[0] = "Folder not accessible";
-                } else {
-                    try {
-                        ReceiptExporter.export(ExportActivity.this, tree, r);
-
-                        String merchantLabel;
-
-                        if (r.merchant == null) {
-                            merchantLabel = "receipt";
-                        } else {
-                            merchantLabel = r.merchant;
-                        }
-
-                        msg[0] = "Exported: " + merchantLabel;
-
-                        Logger.i("Export", "exportNewest: wrote receipt id=" + r.id);
-                    } catch (Exception e) {
-                        msg[0] = "Failed: " + e.getMessage();
-
-                        Logger.e("Export", "exportNewest: failed for id=" + r.id, e);
-                    }
-                }
+                resultMessage = exportSingleReceipt(newest, targetUri);
             }
-
-            final String result = msg[0];
-
-            exec.mainThread().execute(() -> finishExportNewest(result));
+            executors.mainThread().execute(() -> finishExportNewest(resultMessage));
         });
     }
 
 
-    private void finishExportNewest(String msg) {
-        btnExport.setEnabled(true);
+    /** Returns the user-visible message describing what happened to the single receipt. */
+    private String exportSingleReceipt(Receipt receipt, Uri targetUri) {
+        final DocumentFile tree = DocumentFile.fromTreeUri(ExportActivity.this, targetUri);
+        if (tree == null) {
+            return MSG_FOLDER_UNAVAILABLE;
+        }
+        try {
+            ReceiptExporter.export(ExportActivity.this, tree, receipt);
+            final String merchantLabel;
+            if (receipt.merchant == null) {
+                merchantLabel = "receipt";
+            } else {
+                merchantLabel = receipt.merchant;
+            }
+            Logger.i(TAG, "exportNewest: wrote receipt id=" + receipt.id);
+            return "Exported: " + merchantLabel;
+        } catch (Exception exportFailure) {
+            Logger.e(TAG, "exportNewest: failed for id=" + receipt.id, exportFailure);
+            return "Failed: " + exportFailure.getMessage();
+        }
+    }
 
-        tvStatus.setText(msg);
 
-        Toast.makeText(ExportActivity.this, msg, Toast.LENGTH_LONG).show();
+    private void finishExportNewest(String resultMessage) {
+        exportButton.setEnabled(true);
+        statusView.setText(resultMessage);
+        Toast.makeText(this, resultMessage, Toast.LENGTH_LONG).show();
     }
 
 
     private Receipt newestReceipt() {
-        List<Receipt> all = db.receiptDao().getAll();
-
-        if (all.isEmpty()) return null;
-
+        final List<Receipt> allReceipts = database.receiptDao().getAll();
+        if (allReceipts.isEmpty()) return null;
         // already ordered by dateMillis DESC
-        return all.get(0);
+        return allReceipts.get(0);
     }
 }

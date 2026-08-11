@@ -34,6 +34,25 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    // Unit tests: pure JVM. Stubbed Android types return default values
+    // (0 / false / null) so the room annotations and android.graphics.Rect
+    // references in our POJOs don't blow up at test time. Anything that
+    // truly needs a real Android Context (Activities, Room SQL, ML Kit)
+    // belongs in androidTest, not here.
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            returnDefaultValues = true
+            all { testTask ->
+                testTask.useJUnitPlatform()
+                // Pin the test JVM to UTC so date-formatting tests are
+                // deterministic across machines. Without this, epoch 0
+                // renders as "Dec 31, 1969" in any US timezone.
+                testTask.jvmArgs '-Duser.timezone=UTC'
+            }
+        }
+    }
 }
 
 dependencies {
@@ -78,4 +97,13 @@ dependencies {
 
     // SAF DocumentFile (export to user-picked folder)
     implementation 'androidx.documentfile:documentfile:1.0.1'
+
+    // ---------- Unit tests (pure JVM, run via :app:testDebugUnitTest) ----------
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.1'
+    testImplementation 'org.assertj:assertj-core:3.24.2'
+    // Real org.json on the test classpath. The Android jar ships only
+    // stubs of org.json.JSONObject/Array, so without this dependency
+    // anything that calls json.put(...) would throw at test time.
+    testImplementation 'org.json:json:20231013'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.1'
 }

@@ -31,8 +31,6 @@ import com.example.receipttracker.data.BankTransaction;
 
 import com.example.receipttracker.data.Budget;
 
-import com.example.receipttracker.data.BudgetDao;
-
 import com.example.receipttracker.data.Receipt;
 
 import com.example.receipttracker.data.ReceiptDao;
@@ -92,11 +90,23 @@ public class EditReceiptActivity extends AppCompatActivity {
 
     private ImageView ivThumb;
 
-    private TextInputEditText etMerchant, etDate, etAmount, etNotes;
+    private TextInputEditText etMerchant;
 
-    private TextView tvRawText, tvVerifier;
+    private TextInputEditText etDate;
 
-    private MaterialButton btnSave, btnDelete, btnMarkTotal;
+    private TextInputEditText etAmount;
+
+    private TextInputEditText etNotes;
+
+    private TextView tvRawText;
+
+    private TextView tvVerifier;
+
+    private MaterialButton btnSave;
+
+    private MaterialButton btnDelete;
+
+    private MaterialButton btnMarkTotal;
 
 
     private long existingId = -1;
@@ -117,6 +127,11 @@ public class EditReceiptActivity extends AppCompatActivity {
     private boolean budgetPromptHandled = false;
 
 
+    // Set when the user picks a budget in the "Add to budget?" dialog; consumed
+    // by saveReceiptInternal to attach the new receipt to that budget.
+    private Long pendingBudgetId = null;
+
+
     private final AppExecutors exec = AppExecutors.get();
 
 
@@ -130,7 +145,25 @@ public class EditReceiptActivity extends AppCompatActivity {
 
         setContentView(R.layout.activity_edit_receipt);
 
+        bindViews();
 
+        extractIntentExtras();
+
+        prefillFromIntent();
+
+        renderPhoto();
+
+        renderDate();
+
+        attachListeners();
+
+        if (existingId >= 0) {
+            loadExistingReceipt(existingId);
+        }
+    }
+
+
+    private void bindViews() {
         ivThumb = findViewById(R.id.iv_thumb);
 
         etMerchant = findViewById(R.id.et_merchant);
@@ -150,9 +183,11 @@ public class EditReceiptActivity extends AppCompatActivity {
         btnDelete = findViewById(R.id.btn_delete);
 
         btnMarkTotal = findViewById(R.id.btn_mark_total);
+    }
 
 
-        Intent intent = getIntent();
+    private void extractIntentExtras() {
+        final Intent intent = getIntent();
 
         if (intent.hasExtra(EXTRA_RECEIPT_ID)) {
             existingId = intent.getLongExtra(EXTRA_RECEIPT_ID, -1);
@@ -161,51 +196,52 @@ public class EditReceiptActivity extends AppCompatActivity {
         photoPath = intent.getStringExtra(EXTRA_PHOTO_PATH);
 
         rawText = intent.getStringExtra(EXTRA_RAW_TEXT);
+    }
 
 
-        // New-from-scan path: prefill the form with parsed values
-        if (existingId < 0) {
-            String merchant = intent.getStringExtra(EXTRA_MERCHANT);
+    /**
+     * New-from-scan path: prefill the form with parsed values from
+     * the intent. The merchant string is run through the JSON
+     * classifier — high-confidence matches are replaced with the
+     * canonical form (e.g. "WHOLE FOODS" -> "Whole Foods Market");
+     * low-confidence predictions leave the OCR string as-is.
+     */
+    private void prefillFromIntent() {
+        if (existingId >= 0) return;
 
-            double amount = intent.getDoubleExtra(EXTRA_AMOUNT, 0);
+        final Intent intent = getIntent();
 
-            long date = intent.getLongExtra(EXTRA_DATE_MILLIS, 0);
+        final String merchant = intent.getStringExtra(EXTRA_MERCHANT);
 
-            if (merchant != null) {
-                // Stage 2: refine the parsed merchant through the JSON
-                // classifier. If the classifier has a high-confidence
-                // match, replace the raw OCR string with the canonical
-                // form (e.g. "WHOLE FOODS" -> "Whole Foods Market").
-                // Otherwise keep the OCR string.
-                MerchantClassifier.Prediction pred = MerchantClassifier.predict(merchant);
+        final double amount = intent.getDoubleExtra(EXTRA_AMOUNT, 0);
 
-                String refined;
+        final long date = intent.getLongExtra(EXTRA_DATE_MILLIS, 0);
 
-                if (pred != null && pred.confidence >= 0.40) {
-                    refined = pred.name;
-                } else {
-                    refined = merchant;
-                }
+        if (merchant != null) {
+            final MerchantClassifier.Prediction prediction = MerchantClassifier.predict(merchant);
 
-                etMerchant.setText(refined);
-
-                if (pred != null) {
-                    Logger.i("Edit", "merchant refined: '" + merchant
-                            + "' -> '" + refined + "' (conf=" + String.format("%.2f", pred.confidence) + ")");
-                }
+            final String refined;
+            if (prediction != null && prediction.confidence >= 0.40) {
+                refined = prediction.name;
+            } else {
+                refined = merchant;
             }
 
-            if (amount > 0) etAmount.setText(String.valueOf(amount));
+            etMerchant.setText(refined);
 
-            if (date > 0) dateMillis = date;
+            if (prediction != null) {
+                Logger.i("Edit", "merchant refined: '" + merchant
+                        + "' -> '" + refined + "' (conf=" + String.format("%.2f", prediction.confidence) + ")");
+            }
         }
 
+        if (amount > 0) etAmount.setText(String.valueOf(amount));
 
-        renderPhoto();
+        if (date > 0) dateMillis = date;
+    }
 
-        renderDate();
 
-
+    private void attachListeners() {
         etDate.setOnClickListener(v -> showDatePicker());
 
         tvRawText.setOnClickListener(v -> {
@@ -248,64 +284,67 @@ public class EditReceiptActivity extends AppCompatActivity {
         });
 
         btnMarkTotal.setOnClickListener(v -> onMarkTotalClicked());
+    }
 
 
-        if (existingId < 0) {
-            btnDelete.setVisibility(View.GONE);
-        } else {
-            // Load existing receipt from DB on the disk executor.
-            final long id = existingId;
+    private void loadExistingReceipt(final long id) {
+        btnDelete.setVisibility(View.GONE);
 
-            exec.diskIO().execute(() -> {
-                Receipt r = AppDatabase.get(EditReceiptActivity.this).receiptDao().getById(id);
+        // Load existing receipt from DB on the disk executor.
+        exec.diskIO().execute(() -> {
+            final Receipt receipt = AppDatabase.get(EditReceiptActivity.this).receiptDao().getById(id);
 
-                exec.mainThread().execute(() -> {
-                    if (r == null) { finish(); return; }
+            exec.mainThread().execute(() -> {
+                if (receipt == null) {
+                    finish();
+                    return;
+                }
 
-                    String merchantText;
-
-                    if (r.merchant == null) {
-                        merchantText = "";
-                    } else {
-                        merchantText = r.merchant;
-                    }
-
-                    etMerchant.setText(merchantText);
-
-                    String amountText;
-
-                    if (r.amount > 0) {
-                        amountText = String.valueOf(r.amount);
-                    } else {
-                        amountText = "";
-                    }
-
-                    etAmount.setText(amountText);
-
-                    String notesText;
-
-                    if (r.notes == null) {
-                        notesText = "";
-                    } else {
-                        notesText = r.notes;
-                    }
-
-                    etNotes.setText(notesText);
-
-                    dateMillis = r.dateMillis;
-
-                    photoPath = r.photoPath;
-
-                    rawText = r.rawText;
-
-                    renderPhoto();
-
-                    renderDate();
-
-                    if (rawText != null) tvRawText.setText(rawText);
-                });
+                bindExistingReceipt(receipt);
             });
+        });
+    }
+
+
+    private void bindExistingReceipt(Receipt receipt) {
+        final String merchantText;
+        if (receipt.merchant == null) {
+            merchantText = "";
+        } else {
+            merchantText = receipt.merchant;
         }
+
+        etMerchant.setText(merchantText);
+
+        final String amountText;
+        if (receipt.amount > 0) {
+            amountText = String.valueOf(receipt.amount);
+        } else {
+            amountText = "";
+        }
+
+        etAmount.setText(amountText);
+
+        final String notesText;
+        if (receipt.notes == null) {
+            notesText = "";
+        } else {
+            notesText = receipt.notes;
+        }
+
+        etNotes.setText(notesText);
+
+        dateMillis = receipt.dateMillis;
+
+        photoPath = receipt.photoPath;
+
+        rawText = receipt.rawText;
+
+        renderPhoto();
+
+        renderDate();
+
+        if (rawText != null) tvRawText.setText(rawText);
     }
 
 
@@ -316,9 +355,9 @@ public class EditReceiptActivity extends AppCompatActivity {
             return;
         }
 
-        Bitmap bmp = ReceiptImageStore.decodeSampled(photoPath, 1200, 1200);
+        final Bitmap bitmap = ReceiptImageStore.decodeSampled(photoPath, 1200, 1200);
 
-        if (bmp != null) ivThumb.setImageBitmap(bmp);
+        if (bitmap != null) ivThumb.setImageBitmap(bitmap);
     }
 
 
@@ -328,24 +367,29 @@ public class EditReceiptActivity extends AppCompatActivity {
 
 
     private void showDatePicker() {
-        Calendar c = Calendar.getInstance(TimeZone.getDefault());
+        final Calendar calendar = Calendar.getInstance(TimeZone.getDefault());
 
-        c.setTimeInMillis(dateMillis);
+        calendar.setTimeInMillis(dateMillis);
+
+        final int year = calendar.get(Calendar.YEAR);
+
+        final int month = calendar.get(Calendar.MONTH);
+
+        final int day = calendar.get(Calendar.DAY_OF_MONTH);
 
         new DatePickerDialog(this,
-                (view, year, month, day) -> {
-                    Calendar n = Calendar.getInstance(TimeZone.getDefault());
+                (view, pickedYear, pickedMonth, pickedDay) -> {
+                    final Calendar next = Calendar.getInstance(TimeZone.getDefault());
 
-                    n.clear();
+                    next.clear();
 
-                    n.set(year, month, day);
+                    next.set(pickedYear, pickedMonth, pickedDay);
 
-                    dateMillis = n.getTimeInMillis();
+                    dateMillis = next.getTimeInMillis();
 
                     renderDate();
                 },
-
-                c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH))
+                year, month, day)
                 .show();
     }
 
@@ -359,9 +403,9 @@ public class EditReceiptActivity extends AppCompatActivity {
             ok = false;
         }
 
-        double amt = parseAmount();
+        final double amount = parseAmount();
 
-        if (amt <= 0) {
+        if (amount <= 0) {
             etAmount.setError(getString(R.string.error_invalid_amount));
 
             ok = false;
@@ -374,35 +418,42 @@ public class EditReceiptActivity extends AppCompatActivity {
     private double parseAmount() {
         if (etAmount.getText() == null) return 0;
 
-        String s = etAmount.getText().toString().replace("$", "").replace(",", "").trim();
+        final String cleaned = etAmount.getText().toString().replace("$", "").replace(",", "").trim();
 
-        if (s.isEmpty()) return 0;
+        if (cleaned.isEmpty()) return 0;
 
-        try { return Double.parseDouble(s); } catch (NumberFormatException e) { return 0; }
+        try {
+            return Double.parseDouble(cleaned);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
 
     private void deleteReceipt() {
-        if (existingId < 0) { finish(); return; }
+        if (existingId < 0) {
+            finish();
+            return;
+        }
 
         final long id = existingId;
 
         Logger.i("Edit", "deleteReceipt: id=" + id);
 
         exec.diskIO().execute(() -> {
-            AppDatabase db = AppDatabase.get(EditReceiptActivity.this);
+            final AppDatabase db = AppDatabase.get(EditReceiptActivity.this);
 
-            Receipt r = db.receiptDao().getById(id);
+            final Receipt receipt = db.receiptDao().getById(id);
 
-            if (r != null) {
+            if (receipt != null) {
                 // If this receipt was matched, also unmatch the bank transaction side
                 // so it shows up in "unmatched" again and the user can re-link it.
-                if (r.matchGroupId != null) {
-                    for (BankTransaction t : db.bankTransactionDao().getAll()) {
-                        if (r.matchGroupId.equals(t.matchGroupId)) {
-                            db.bankTransactionDao().clearMatchGroup(t.id);
+                if (receipt.matchGroupId != null) {
+                    for (BankTransaction tx : db.bankTransactionDao().getAll()) {
+                        if (receipt.matchGroupId.equals(tx.matchGroupId)) {
+                            db.bankTransactionDao().clearMatchGroup(tx.id);
 
-                            Logger.i("Edit", "Cascade-unmatched tx id=" + t.id
+                            Logger.i("Edit", "Cascade-unmatched tx id=" + tx.id
                                     + " (was paired with deleted receipt)");
 
                             break;
@@ -410,12 +461,12 @@ public class EditReceiptActivity extends AppCompatActivity {
                     }
                 }
 
-                db.receiptDao().delete(r);
+                db.receiptDao().delete(receipt);
 
-                if (r.photoPath != null) {
-                    boolean ok = new File(r.photoPath).delete();
+                if (receipt.photoPath != null) {
+                    final boolean deleted = new File(receipt.photoPath).delete();
 
-                    Logger.i("Edit", "Deleted photo " + r.photoPath + " ok=" + ok);
+                    Logger.i("Edit", "Deleted photo " + receipt.photoPath + " ok=" + deleted);
                 }
             }
 
@@ -474,7 +525,7 @@ public class EditReceiptActivity extends AppCompatActivity {
                 return;
             }
 
-            DetectedNumber picked = ReceiptParser.pickCircledCandidate(numbers);
+            final DetectedNumber picked = ReceiptParser.pickCircledCandidate(numbers);
 
             if (picked == null) {
                 Logger.w("Edit", "autoPick: pickCircledCandidate returned null");
@@ -482,18 +533,11 @@ public class EditReceiptActivity extends AppCompatActivity {
                 return;
             }
 
-            String handwritingNote;
-            if (picked.isHandwrittenAndMarked()) {
-                handwritingNote = " [HANDWRITTEN — Tesseract re-recognised as $" + picked.value + "]";
-            } else {
-                handwritingNote = "";
-            }
             Logger.i("Edit", "autoPick: chose $" + picked.value
                     + " from line " + picked.lineIndex
                     + " (keyword=" + picked.keyword
                     + ", hl=" + String.format(Locale.US, "%.2f", picked.highlightScore)
-                    + ", cr=" + String.format(Locale.US, "%.2f", picked.circleScore)
-                    + handwritingNote + ")");
+                    + ", cr=" + String.format(Locale.US, "%.2f", picked.circleScore) + ")");
 
             // Use the 10-run ensemble for the final verdict.
             runVerifierEnsemble(picked, /*autoPicked=*/true);
@@ -511,15 +555,15 @@ public class EditReceiptActivity extends AppCompatActivity {
         if (photoPath == null) return Collections.emptyList();
 
         try {
-            Bitmap bmp = ReceiptImageStore.decodeSampled(photoPath, 1600, 1600);
+            final Bitmap bitmap = ReceiptImageStore.decodeSampled(photoPath, 1600, 1600);
 
-            if (bmp == null) {
+            if (bitmap == null) {
                 Logger.w("Edit", "tryExtractWithVisualSignals: failed to decode bitmap");
 
                 return Collections.emptyList();
             }
 
-            List<ReceiptOcr.OcrLine> lines = ReceiptOcr.recognizeWithBoxes(bmp);
+            final List<ReceiptOcr.OcrLine> lines = ReceiptOcr.recognizeWithBoxes(bitmap);
 
             if (lines == null || lines.isEmpty()) {
                 Logger.w("Edit", "tryExtractWithVisualSignals: structured OCR returned 0 lines");
@@ -527,7 +571,7 @@ public class EditReceiptActivity extends AppCompatActivity {
                 return Collections.emptyList();
             }
 
-            return ReceiptParser.extractAllNumbersWithVisualSignals(bmp, lines);
+            return ReceiptParser.extractAllNumbersWithVisualSignals(bitmap, lines);
         } catch (Throwable t) {
             Logger.e("Edit", "tryExtractWithVisualSignals: failed", t);
 
@@ -558,12 +602,12 @@ public class EditReceiptActivity extends AppCompatActivity {
                 holder[0] = TotalVerifier.verify(picked.value, cachedNumbers, entered);
             }
 
-            final TotalVerifier.Result r = holder[0];
+            final TotalVerifier.Result result = holder[0];
 
             runOnUiThread(() -> {
-                renderVerifier(picked, r, entered, autoPicked);
+                renderVerifier(picked, result, entered, autoPicked);
 
-                lastVerifiedTotal = r.recommendedTotal;
+                lastVerifiedTotal = result.recommendedTotal;
 
                 budgetPromptHandled = false;
             });
@@ -597,21 +641,20 @@ public class EditReceiptActivity extends AppCompatActivity {
         }
 
         // Build a readable label per number: "$23.45  •  Subtotal"
-        String[] labels = new String[cachedNumbers.size()];
+        final String[] labels = new String[cachedNumbers.size()];
 
-        for (int i = 0; i < cachedNumbers.size(); i++) {
-            DetectedNumber n = cachedNumbers.get(i);
+        for (int index = 0; index < cachedNumbers.size(); index++) {
+            final DetectedNumber number = cachedNumbers.get(index);
 
-            String kw;
-
-            if (n.keyword == null) {
-                kw = "";
+            final String keywordSuffix;
+            if (number.keyword == null) {
+                keywordSuffix = "";
             } else {
-                kw = "  •  " + n.keyword.toUpperCase();
+                keywordSuffix = "  •  " + number.keyword.toUpperCase();
             }
 
-            labels[i] = String.format(Locale.US, "$%.2f%s   [line %d]  %s",
-                    n.value, kw, n.lineIndex, trim(n.line, 60));
+            labels[index] = String.format(Locale.US, "$%.2f%s   [line %d]  %s",
+                    number.value, keywordSuffix, number.lineIndex, trim(number.line, 60));
         }
 
         Logger.i("Edit", "Showing " + labels.length + " numbers to user (override)");
@@ -619,7 +662,7 @@ public class EditReceiptActivity extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle(R.string.action_pick_total)
                 .setItems(labels, (dialog, which) -> {
-                    DetectedNumber picked = cachedNumbers.get(which);
+                    final DetectedNumber picked = cachedNumbers.get(which);
 
                     Logger.i("Edit", "User picked value=" + picked.value
                             + " from line " + picked.lineIndex
@@ -627,10 +670,10 @@ public class EditReceiptActivity extends AppCompatActivity {
 
                     runVerifier(picked, /*autoPicked=*/false);
                 })
-                .setNegativeButton(android.R.string.cancel, (d, w) -> {
+                .setNegativeButton(android.R.string.cancel, (dialog, which) -> {
                     Logger.i("Edit", "Re-pick dialog cancelled");
 
-                    d.dismiss();
+                    dialog.dismiss();
                 })
                 .show();
     }
@@ -643,13 +686,13 @@ public class EditReceiptActivity extends AppCompatActivity {
                 + ", autoPicked=" + autoPicked);
 
         exec.diskIO().execute(() -> {
-            TotalVerifier.Result r = TotalVerifier.verify(picked.value, cachedNumbers, entered);
+            final TotalVerifier.Result result = TotalVerifier.verify(picked.value, cachedNumbers, entered);
 
             runOnUiThread(() -> {
                 // Show the verdict panel for comparison, but DON'T let it
                 // override the re-pick — the user explicitly chose this
                 // number, so it should be what shows up in the budget.
-                renderVerifier(picked, r, entered, autoPicked,
+                renderVerifier(picked, result, entered, autoPicked,
                         /*overwriteAmount=*/false, /*showToast=*/true);
 
                 // Honor the re-pick: the amount field and the "picked in
@@ -667,16 +710,16 @@ public class EditReceiptActivity extends AppCompatActivity {
     }
 
 
-    private void renderVerifier(DetectedNumber picked, TotalVerifier.Result r,
+    private void renderVerifier(DetectedNumber picked, TotalVerifier.Result result,
                                 double entered, boolean autoPicked) {
-        renderVerifier(picked, r, entered, autoPicked, /*overwriteAmount=*/true,
+        renderVerifier(picked, result, entered, autoPicked, /*overwriteAmount=*/true,
                 /*showToast=*/true);
     }
 
 
     /**
      * @param overwriteAmount when true (the default), the amount field is
-     *     replaced with {@code r.recommendedTotal}. When false, the field is
+     *     replaced with {@code result.recommendedTotal}. When false, the field is
      *     left untouched — used by callers (re-pick and save-time sanity
      *     check) that want the verdict panel for comparison but must NOT
      *     clobber the user's explicit choice.
@@ -686,12 +729,39 @@ public class EditReceiptActivity extends AppCompatActivity {
      *     would be misleading (the user didn't re-pick this number — the
      *     sanity check chose it as the closest candidate).
      */
-    private void renderVerifier(DetectedNumber picked, TotalVerifier.Result r,
+    private void renderVerifier(DetectedNumber picked, TotalVerifier.Result result,
                                 double entered, boolean autoPicked,
                                 boolean overwriteAmount, boolean showToast) {
-        applyVerdictBackground(r);
+        applyVerdictBackground(result);
 
-        StringBuilder body = new StringBuilder();
+        tvVerifier.setText(buildVerifierBody(picked, result, entered, autoPicked));
+
+        tvVerifier.setVisibility(View.VISIBLE);
+
+        // Auto-apply the verifier's recommended total, unless the caller
+        // explicitly opted out (re-pick honors the user's pick; save-time
+        // sanity check is advisory only).
+        if (overwriteAmount) {
+            etAmount.setText(String.format(Locale.US, "%.2f", result.recommendedTotal));
+        }
+
+        // For auto-pick, the amount was pre-filled, so no toast — the
+        // verdict panel communicates the result. For manual picks
+        // (the user just tapped a number in the dialog) a toast is
+        // still useful confirmation. When the caller's honoring the
+        // re-pick (overwriteAmount=false), the amount field shows the
+        // picked value, not the verifier's adjusted recommendation —
+        // so the toast should reflect that, with a note if the
+        // verifier disagreed.
+        if (!autoPicked && showToast) {
+            showRePickToast(picked, result, overwriteAmount);
+        }
+    }
+
+
+    private String buildVerifierBody(DetectedNumber picked, TotalVerifier.Result result,
+                                      double entered, boolean autoPicked) {
+        final StringBuilder body = new StringBuilder();
 
         if (autoPicked) {
             body.append(String.format(Locale.US,
@@ -709,92 +779,70 @@ public class EditReceiptActivity extends AppCompatActivity {
                     picked.highlightScore, picked.circleScore));
         }
 
-        if (picked.isHandwrittenAndMarked()) {
-            body.append(String.format(Locale.US,
-                    "  Handwritten — Tesseract re-recognised this bbox%n"));
-        }
-
         if (entered > 0) {
             body.append(String.format(Locale.US, "Entered: $%.2f%n", entered));
         }
 
         body.append(String.format(Locale.US, "%nVerifier verdict:%n"));
 
-        body.append(String.format(Locale.US, "  Total: $%.2f   (source: %s)%n", r.recommendedTotal, r.recommendedSource));
+        body.append(String.format(Locale.US, "  Total: $%.2f   (source: %s)%n", result.recommendedTotal, result.recommendedSource));
 
-        body.append(String.format(Locale.US, "  Confidence: %.0f%%%n", r.confidence * 100));
+        body.append(String.format(Locale.US, "  Confidence: %.0f%%%n", result.confidence * 100));
 
-        if (r.ensembleSize > 1) {
+        if (result.ensembleSize > 1) {
             body.append(String.format(Locale.US, "  Ensemble: %d/%d runs voted $%.2f  (consensus conf=%.0f%%)%n",
-                    r.ensembleVotesForWinner, r.ensembleSize, r.recommendedTotal,
-                    r.ensembleConfidence * 100));
+                    result.ensembleVotesForWinner, result.ensembleSize, result.recommendedTotal,
+                    result.ensembleConfidence * 100));
         }
 
-        body.append(String.format(Locale.US, "  P(circled is a price):  %.2f%n", r.priceProbability));
+        body.append(String.format(Locale.US, "  P(circled is a price):  %.2f%n", result.priceProbability));
 
         body.append(String.format(Locale.US, "  P(circled is the total): %.2f  (best other: %.2f)%n",
-                r.candidateProbability, r.bestAlternativeProbability));
+                result.candidateProbability, result.bestAlternativeProbability));
 
         if (entered > 0) {
-            body.append(String.format(Locale.US, "  P(entered is a price):  %.2f%n", r.enteredPriceProbability));
+            body.append(String.format(Locale.US, "  P(entered is a price):  %.2f%n", result.enteredPriceProbability));
 
-            body.append(String.format(Locale.US, "  P(entered is the total): %.2f%n", r.enteredProbability));
+            body.append(String.format(Locale.US, "  P(entered is the total): %.2f%n", result.enteredProbability));
 
-            if (r.enteredMatchesMarked) {
+            if (result.enteredMatchesMarked) {
                 body.append("  Cross-check: entered and circled agree (within $0.10)\n");
             } else {
                 body.append("  Cross-check: entered and circled differ\n");
             }
         }
 
-        body.append(String.format(Locale.US, "  Sanity: %s%n", r.sanityCheck));
+        body.append(String.format(Locale.US, "  Sanity: %s%n", result.sanityCheck));
 
-        if (r.wasAdjusted) {
+        if (result.wasAdjusted) {
             body.append(String.format(Locale.US, "  (adjusted from marked value)%n%n"));
         } else {
             body.append(String.format(Locale.US, "  (kept marked value)%n%n"));
         }
 
-        body.append(r.reasoning);
+        body.append(result.reasoning);
 
-        tvVerifier.setText(body.toString());
+        return body.toString();
+    }
 
-        tvVerifier.setVisibility(View.VISIBLE);
 
-        // Auto-apply the verifier's recommended total, unless the caller
-        // explicitly opted out (re-pick honors the user's pick; save-time
-        // sanity check is advisory only).
+    private void showRePickToast(DetectedNumber picked, TotalVerifier.Result result, boolean overwriteAmount) {
+        final String toastText;
         if (overwriteAmount) {
-            etAmount.setText(String.format(Locale.US, "%.2f", r.recommendedTotal));
+            toastText = String.format(Locale.US,
+                    "Total: $%.2f  (%.0f%%, P(total)=%.2f, source=%s)",
+                    result.recommendedTotal, result.confidence * 100, result.candidateProbability, result.recommendedSource);
+        } else if (result.recommendedTotal == picked.value) {
+            toastText = String.format(Locale.US,
+                    "Re-picked: $%.2f  (verifier agrees, %.0f%%)",
+                    picked.value, result.confidence * 100);
+        } else {
+            toastText = String.format(Locale.US,
+                    "Re-picked: $%.2f  (verifier recommends $%.2f, %.0f%%)",
+                    picked.value, result.recommendedTotal, result.confidence * 100);
         }
 
-        // For auto-pick, the amount was pre-filled, so no toast — the
-        // verdict panel communicates the result. For manual picks
-        // (the user just tapped a number in the dialog) a toast is
-        // still useful confirmation. When the caller's honoring the
-        // re-pick (overwriteAmount=false), the amount field shows the
-        // picked value, not the verifier's adjusted recommendation —
-        // so the toast should reflect that, with a note if the
-        // verifier disagreed.
-        if (!autoPicked && showToast) {
-            String toast;
-
-            if (overwriteAmount) {
-                toast = String.format(Locale.US,
-                        "Total: $%.2f  (%.0f%%, P(total)=%.2f, source=%s)",
-                        r.recommendedTotal, r.confidence * 100, r.candidateProbability, r.recommendedSource);
-            } else if (r.recommendedTotal == picked.value) {
-                toast = String.format(Locale.US,
-                        "Re-picked: $%.2f  (verifier agrees, %.0f%%)",
-                        picked.value, r.confidence * 100);
-            } else {
-                toast = String.format(Locale.US,
-                        "Re-picked: $%.2f  (verifier recommends $%.2f, %.0f%%)",
-                        picked.value, r.recommendedTotal, r.confidence * 100);
-            }
-
-            Toast.makeText(this, toast, Toast.LENGTH_LONG).show();
-        }
+        Toast.makeText(this, toastText, Toast.LENGTH_LONG).show();
     }
 
 
@@ -826,24 +874,13 @@ public class EditReceiptActivity extends AppCompatActivity {
         // The "candidate" for the sanity check is whichever number is closest to
         // the entered value — that's the one the user effectively marked.
         final DetectedNumber candidate;
-
         if (entered > 0) {
-            DetectedNumber best = cachedNumbers.get(0);
+            final DetectedNumber closest = findClosestToEntered(cachedNumbers, entered);
 
-            double bestDelta = Math.abs(best.value - entered);
-
-            for (DetectedNumber n : cachedNumbers) {
-                double d = Math.abs(n.value - entered);
-
-                if (d < bestDelta) { best = n; bestDelta = d; }
-            }
-
-            candidate = best;
+            candidate = closest;
         } else {
             // No entered value — sanity-check against the largest detected number.
-            DetectedNumber largest = cachedNumbers.get(0);
-
-            for (DetectedNumber n : cachedNumbers) if (n.value > largest.value) largest = n;
+            final DetectedNumber largest = findLargestNumber(cachedNumbers);
 
             candidate = largest;
         }
@@ -852,22 +889,12 @@ public class EditReceiptActivity extends AppCompatActivity {
                 + "  entered=" + entered);
 
         exec.diskIO().execute(() -> {
-            TotalVerifier.Result r = TotalVerifier.verify(candidate.value, cachedNumbers, entered);
+            final TotalVerifier.Result result = TotalVerifier.verify(candidate.value, cachedNumbers, entered);
 
             runOnUiThread(() -> {
-                StringBuilder msg = new StringBuilder();
+                final StringBuilder toastBody = buildSanityCheckToast(result, entered);
 
-                msg.append(String.format(Locale.US,
-                        "Sanity check: $%.2f  (%s, %.0f%% conf)",
-                        r.recommendedTotal, r.recommendedSource, r.confidence * 100));
-
-                if (entered > 0 && r.recommendedTotal != entered) {
-                    msg.append(String.format(Locale.US,
-                            "%n%n  Entered:  $%.2f%n  Recommended: $%.2f%n  %s",
-                            entered, r.recommendedTotal, r.sanityCheck));
-                }
-
-                Logger.i("Edit", "save-time sanity: " + msg);
+                Logger.i("Edit", "save-time sanity: " + toastBody);
 
                 // Show the verdict in the on-screen panel too, so the user
                 // sees the math. Advisory only — do NOT overwrite the
@@ -877,15 +904,62 @@ public class EditReceiptActivity extends AppCompatActivity {
                 // user didn't re-pick this number (the sanity check chose
                 // it as the closest candidate); the sanity check's own
                 // toast below already shows the comparison.
-                renderVerifier(candidate, r, entered, /*autoPicked=*/false,
+                renderVerifier(candidate, result, entered, /*autoPicked=*/false,
                         /*overwriteAmount=*/false, /*showToast=*/false);
 
-                Toast.makeText(this, msg.toString(), Toast.LENGTH_LONG).show();
+                Toast.makeText(this, toastBody.toString(), Toast.LENGTH_LONG).show();
 
                 // Save regardless — the sanity check is advisory, not blocking.
                 saveReceiptInternal();
             });
         });
+    }
+
+
+    private static DetectedNumber findClosestToEntered(List<DetectedNumber> numbers, double entered) {
+        DetectedNumber best = numbers.get(0);
+
+        double bestDelta = Math.abs(best.value - entered);
+
+        for (DetectedNumber number : numbers) {
+            final double delta = Math.abs(number.value - entered);
+
+            if (delta < bestDelta) {
+                best = number;
+
+                bestDelta = delta;
+            }
+        }
+
+        return best;
+    }
+
+
+    private static DetectedNumber findLargestNumber(List<DetectedNumber> numbers) {
+        DetectedNumber largest = numbers.get(0);
+
+        for (DetectedNumber number : numbers) {
+            if (number.value > largest.value) largest = number;
+        }
+
+        return largest;
+    }
+
+
+    private StringBuilder buildSanityCheckToast(TotalVerifier.Result result, double entered) {
+        final StringBuilder toastBody = new StringBuilder();
+
+        toastBody.append(String.format(Locale.US,
+                "Sanity check: $%.2f  (%s, %.0f%% conf)",
+                result.recommendedTotal, result.recommendedSource, result.confidence * 100));
+
+        if (entered > 0 && result.recommendedTotal != entered) {
+            toastBody.append(String.format(Locale.US,
+                    "%n%n  Entered:  $%.2f%n  Recommended: $%.2f%n  %s",
+                    entered, result.recommendedTotal, result.sanityCheck));
+        }
+
+        return toastBody;
     }
 
 
@@ -897,7 +971,7 @@ public class EditReceiptActivity extends AppCompatActivity {
         // if we already asked (e.g. sanity check re-runs renderVerifier).
         if (lastVerifiedTotal != null && !budgetPromptHandled) {
             exec.diskIO().execute(() -> {
-                Budget active = AppDatabase.get(EditReceiptActivity.this)
+                final Budget active = AppDatabase.get(EditReceiptActivity.this)
                         .budgetDao().getActive();
 
                 runOnUiThread(() -> {
@@ -917,38 +991,37 @@ public class EditReceiptActivity extends AppCompatActivity {
 
 
     private void showBudgetPrompt(Budget active) {
-        double total = parseAmount();
+        final double total = parseAmount();
 
-        double pct;
-
+        final double usedPercent;
         if (active.maxAmount > 0) {
-            pct = Math.min(100, total * 100.0 / active.maxAmount);
+            usedPercent = Math.min(100, total * 100.0 / active.maxAmount);
         } else {
-            pct = 0;
+            usedPercent = 0;
         }
 
-        String msg = String.format(Locale.US,
+        final String message = String.format(Locale.US,
                 "Add $%.2f to '%s' budget? (%.0f%% used, %s cap)",
                 total, active.name,
-                pct,
+                usedPercent,
                 MoneyUtils.format(active.maxAmount));
 
         new AlertDialog.Builder(this)
                 .setTitle("Add to budget")
-                .setMessage(msg)
-                .setPositiveButton("Add", (d, w) -> {
+                .setMessage(message)
+                .setPositiveButton("Add", (dialog, which) -> {
                     budgetPromptHandled = true;
 
                     pendingBudgetId = active.id;
 
                     runSanityCheckBeforeSave();
                 })
-                .setNegativeButton("Skip", (d, w) -> {
+                .setNegativeButton("Skip", (dialog, which) -> {
                     budgetPromptHandled = true;
 
                     runSanityCheckBeforeSave();
                 })
-                .setNeutralButton("Choose another", (d, w) -> {
+                .setNeutralButton("Choose another", (dialog, which) -> {
                     budgetPromptHandled = true;
 
                     showBudgetPicker();
@@ -958,16 +1031,13 @@ public class EditReceiptActivity extends AppCompatActivity {
     }
 
 
-    private Long pendingBudgetId = null;
-
-
     private void showBudgetPicker() {
         exec.diskIO().execute(() -> {
-            List<Budget> all = AppDatabase.get(EditReceiptActivity.this)
+            final List<Budget> allBudgets = AppDatabase.get(EditReceiptActivity.this)
                     .budgetDao().getAllActive();
 
             runOnUiThread(() -> {
-                if (all == null || all.isEmpty()) {
+                if (allBudgets == null || allBudgets.isEmpty()) {
                     Toast.makeText(this, "No budgets available", Toast.LENGTH_SHORT).show();
 
                     runSanityCheckBeforeSave();
@@ -975,23 +1045,23 @@ public class EditReceiptActivity extends AppCompatActivity {
                     return;
                 }
 
-                String[] labels = new String[all.size()];
+                final String[] labels = new String[allBudgets.size()];
 
-                for (int i = 0; i < all.size(); i++) {
-                    Budget b = all.get(i);
+                for (int index = 0; index < allBudgets.size(); index++) {
+                    final Budget budget = allBudgets.get(index);
 
-                    labels[i] = String.format(Locale.US, "%s — %s / %s",
-                            b.name, MoneyUtils.format(b.maxAmount), MoneyUtils.format(b.maxAmount));
+                    labels[index] = String.format(Locale.US, "%s — %s / %s",
+                            budget.name, MoneyUtils.format(budget.maxAmount), MoneyUtils.format(budget.maxAmount));
                 }
 
                 new AlertDialog.Builder(this)
                         .setTitle("Choose budget")
-                        .setItems(labels, (d, w) -> {
-                            pendingBudgetId = all.get(w).id;
+                        .setItems(labels, (dialog, which) -> {
+                            pendingBudgetId = allBudgets.get(which).id;
 
                             runSanityCheckBeforeSave();
                         })
-                        .setNegativeButton(android.R.string.cancel, (d2, w2) -> runSanityCheckBeforeSave())
+                        .setNegativeButton(android.R.string.cancel, (dialog, which) -> runSanityCheckBeforeSave())
                         .show();
             });
         });
@@ -999,99 +1069,102 @@ public class EditReceiptActivity extends AppCompatActivity {
 
 
     private void saveReceiptInternal() {
-        final Receipt r = new Receipt();
-
+        final long resolvedId;
         if (existingId >= 0) {
-            r.id = existingId;
+            resolvedId = existingId;
         } else {
-            r.id = 0;
+            resolvedId = 0L;
         }
 
-        r.merchant = etMerchant.getText().toString().trim();
-
-        r.amount = parseAmount();
-
-        r.dateMillis = dateMillis;
-
+        final String notesText;
         if (etNotes.getText() == null) {
-            r.notes = null;
+            notesText = null;
         } else {
-            r.notes = etNotes.getText().toString().trim();
+            notesText = etNotes.getText().toString().trim();
         }
 
-        r.photoPath = photoPath;
-
-        r.rawText = rawText;
-
-        r.createdAt = System.currentTimeMillis();
+        final Receipt draft = new Receipt(
+                resolvedId,
+                etMerchant.getText().toString().trim(),
+                dateMillis,
+                parseAmount(),
+                photoPath,
+                rawText,
+                notesText,
+                System.currentTimeMillis(),
+                null,
+                null,
+                null);
 
         // Link to the budget the user picked in the prompt. Only set on insert;
         // updates preserve the existing budgetId.
         final Long budgetIdToSet = pendingBudgetId;
 
-        String photoPathLog;
-
-        if (r.photoPath == null) {
+        final String photoPathLog;
+        if (draft.photoPath == null) {
             photoPathLog = "null";
         } else {
-            photoPathLog = r.photoPath;
+            photoPathLog = draft.photoPath;
         }
 
-        Logger.i("Edit", "saveReceiptInternal: id=" + r.id + " merchant='" + r.merchant
-                + "' amount=" + r.amount + " dateMillis=" + r.dateMillis
+        Logger.i("Edit", "saveReceiptInternal: id=" + draft.id + " merchant='" + draft.merchant
+                + "' amount=" + draft.amount + " dateMillis=" + draft.dateMillis
                 + " photoPath=" + photoPathLog
                 + " budgetId=" + budgetIdToSet);
 
 
         exec.diskIO().execute(() -> {
-            AppDatabase db = AppDatabase.get(EditReceiptActivity.this);
+            final AppDatabase db = AppDatabase.get(EditReceiptActivity.this);
 
-            ReceiptDao dao = db.receiptDao();
+            final ReceiptDao dao = db.receiptDao();
 
-            long rowId;
+            if (draft.id > 0) {
+                final Receipt existing = dao.getById(draft.id);
 
-            if (r.id > 0) {
-                Receipt existing = dao.getById(r.id);
-
+                final Receipt toUpdate;
                 if (existing != null) {
-                    r.matchGroupId = existing.matchGroupId;
-
-                    r.createdAt = existing.createdAt;
-
+                    final Long effectiveBudgetId;
                     if (budgetIdToSet != null) {
-                        r.budgetId = budgetIdToSet;
+                        effectiveBudgetId = budgetIdToSet;
                     } else {
-                        r.budgetId = existing.budgetId;
+                        effectiveBudgetId = existing.budgetId;
                     }
+
+                    toUpdate = draft
+                            .withMatchGroupId(existing.matchGroupId)
+                            .withCreatedAt(existing.createdAt)
+                            .withBudgetId(effectiveBudgetId);
+                } else {
+                    toUpdate = draft;
                 }
 
-                dao.update(r);
+                dao.update(toUpdate);
 
-                rowId = r.id;
-
-                Logger.i("Edit", "Updated receipt id=" + r.id);
+                Logger.i("Edit", "Updated receipt id=" + toUpdate.id);
             } else {
+                final Receipt toInsert;
                 if (budgetIdToSet != null) {
-                    r.budgetId = budgetIdToSet;
+                    toInsert = draft.withBudgetId(budgetIdToSet);
+                } else {
+                    toInsert = draft;
                 }
 
-                rowId = dao.insert(r);
+                final long rowId = dao.insert(toInsert);
 
                 Logger.i("Edit", "Inserted receipt id=" + rowId + " budgetId=" + budgetIdToSet);
             }
 
             exec.mainThread().execute(() -> {
-                String saved = getString(R.string.saved);
+                final String saved = getString(R.string.saved);
 
-                String msg;
-
+                final String toastMessage;
                 if (budgetIdToSet != null) {
-                    msg = saved + " · added to budget";
+                    toastMessage = saved + " · added to budget";
                 } else {
-                    msg = saved;
+                    toastMessage = saved;
                 }
 
-                Toast.makeText(EditReceiptActivity.this, msg, Toast.LENGTH_SHORT).show();
+                Toast.makeText(EditReceiptActivity.this, toastMessage, Toast.LENGTH_SHORT).show();
 
                 finish();
             });
@@ -1099,16 +1172,16 @@ public class EditReceiptActivity extends AppCompatActivity {
     }
 
 
-    private static String trim(String s, int max) {
-        if (s == null) return "";
+    private static String trim(String input, int max) {
+        if (input == null) return "";
 
-        s = s.trim();
+        final String trimmed = input.trim();
 
-        if (s.length() <= max) {
-            return s;
+        if (trimmed.length() <= max) {
+            return trimmed;
         }
 
-        return s.substring(0, max - 1) + "…";
+        return trimmed.substring(0, max - 1) + "…";
     }
 
 
@@ -1118,12 +1191,11 @@ public class EditReceiptActivity extends AppCompatActivity {
      * low or adjusted -> red (err). The colors come from the bg_verdict_*
      * drawables so they stay in sync with colors.xml.
      */
-    private void applyVerdictBackground(TotalVerifier.Result r) {
-        int drawable;
-
-        if (r.confidence >= 0.7) {
+    private void applyVerdictBackground(TotalVerifier.Result result) {
+        final int drawable;
+        if (result.confidence >= 0.7) {
             drawable = R.drawable.bg_verdict_ok;
-        } else if (r.confidence >= 0.4) {
+        } else if (result.confidence >= 0.4) {
             drawable = R.drawable.bg_verdict_warn;
         } else {
             drawable = R.drawable.bg_verdict_err;

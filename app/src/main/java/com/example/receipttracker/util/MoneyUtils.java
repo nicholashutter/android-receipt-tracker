@@ -2,23 +2,31 @@ package com.example.receipttracker.util;
 
 
 import java.text.NumberFormat;
-
+import java.text.SimpleDateFormat;
 import java.util.Currency;
-
 import java.util.Date;
-
 import java.util.Locale;
 
 
+/**
+ * Tiny utility for the two formatting tasks the UI needs everywhere:
+ * currency-style dollar amounts and human-readable dates.
+ */
 public final class MoneyUtils {
 
-    private static final NumberFormat FORMAT = NumberFormat.getCurrencyInstance(Locale.US);
+    private static final String DATE_PATTERN = "MMM d, yyyy";
+    private static final String CURRENCY_CODE = "USD";
 
+    private static final NumberFormat CURRENCY_FORMAT = NumberFormat.getCurrencyInstance(Locale.US);
+    private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat(DATE_PATTERN, Locale.US);
 
     static {
         try {
-            FORMAT.setCurrency(Currency.getInstance("USD"));
-        } catch (Exception ignored) { }
+            CURRENCY_FORMAT.setCurrency(Currency.getInstance(CURRENCY_CODE));
+        } catch (Exception currencyInitException) {
+            // Locale already implies USD for en_US; only fires if the JVM
+            // doesn't have ISO-4217 data, which basically never happens.
+        }
     }
 
 
@@ -26,15 +34,11 @@ public final class MoneyUtils {
 
 
     public static String format(double amount) {
-        return FORMAT.format(amount);
+        return CURRENCY_FORMAT.format(amount);
     }
 
 
-    private static final java.text.SimpleDateFormat DATE_FMT =
-            new java.text.SimpleDateFormat("MMM d, yyyy", Locale.US);
-
-
-    public static String formatDate(long millis) {
-        return DATE_FMT.format(new Date(millis));
+    public static String formatDate(long epochMillis) {
+        return DATE_FORMAT.format(new Date(epochMillis));
     }
 }

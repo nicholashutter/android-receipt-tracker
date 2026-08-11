@@ -2,7 +2,6 @@ package com.example.receipttracker.ocr;
 
 
 import androidx.annotation.NonNull;
-
 import androidx.annotation.Nullable;
 
 
@@ -14,6 +13,12 @@ import androidx.annotation.Nullable;
  *
  * <p>Used both by the auto-detection pass and the user-driven "mark as
  * total" flow — {@code TotalVerifier} reads a list of these.</p>
+ *
+ * <p>Immutable: every variant is constructed with all fields at once;
+ * for the visual-signal augmentation use the {@code withVisualSignals}
+ * factory. There is no {@code with*} per-field because callers always
+ * need to produce a new number with all the OCR fields intact plus
+ * the visual scores attached.</p>
  */
 public final class DetectedNumber {
 
@@ -44,7 +49,6 @@ public final class DetectedNumber {
      * circle score is a strong "this is the total" indicator.
      */
     public final float highlightScore;
-
     public final float circleScore;
 
 
@@ -52,59 +56,50 @@ public final class DetectedNumber {
     @Nullable public final android.graphics.Rect bbox;
 
 
-    /**
-     * Value re-recognised by Tesseract (handwriting OCR) for the same bbox.
-     * Null when Tesseract wasn't run, wasn't available (no traineddata),
-     * or didn't see a number. When non-null AND the number is visually
-     * emphasised, callers should prefer this over {@link #value}, which
-     * is what ML Kit's print-optimised Latin recognizer returned.
-     */
-    @Nullable public final Double handwritingValue;
-
-
-    public DetectedNumber(double value, @NonNull String line, int lineIndex,
-                          @Nullable String keyword) {
-        this(value, line, lineIndex, keyword, 0f, 0f, null, null);
+    public DetectedNumber(
+            final double value,
+            @NonNull final String line,
+            final int lineIndex,
+            @Nullable final String keyword) {
+        this(value, line, lineIndex, keyword, 0f, 0f, null);
     }
 
 
-    public DetectedNumber(double value, @NonNull String line, int lineIndex,
-                          @Nullable String keyword, float highlightScore,
-                          float circleScore, @Nullable android.graphics.Rect bbox) {
-        this(value, line, lineIndex, keyword, highlightScore, circleScore, bbox, null);
-    }
-
-
-    public DetectedNumber(double value, @NonNull String line, int lineIndex,
-                          @Nullable String keyword, float highlightScore,
-                          float circleScore, @Nullable android.graphics.Rect bbox,
-                          @Nullable Double handwritingValue) {
+    public DetectedNumber(
+            final double value,
+            @NonNull final String line,
+            final int lineIndex,
+            @Nullable final String keyword,
+            final float highlightScore,
+            final float circleScore,
+            @Nullable final android.graphics.Rect bbox) {
+        this.value = value;
         this.line = line;
-
         this.lineIndex = lineIndex;
-
         this.keyword = keyword;
-
         this.highlightScore = highlightScore;
-
         this.circleScore = circleScore;
-
         this.bbox = bbox;
+    }
 
-        this.handwritingValue = handwritingValue;
 
-        // If the user marked this number AND Tesseract re-recognised a
-        // value for it, prefer the Tesseract value as the canonical
-        // "value" of this number. That's the strongest "this is the
-        // total" signal we have — a hand-written digit the user
-        // pointed at — and it lets every downstream caller use
-        // `n.value` without having to remember to call
-        // `n.effectiveValue()`.
-        if (handwritingValue != null && isVisuallyEmphasised()) {
-            this.value = handwritingValue;
-        } else {
-            this.value = value;
+    /**
+     * Returns a new DetectedNumber with the visual-signal scores (and
+     * optional bounding box) attached. Used by the structured-OCR
+     * pipeline after {@link VisualSignalDetector} has scored the
+     * source image.
+     */
+    public DetectedNumber withVisualSignals(
+            final float newHighlightScore,
+            final float newCircleScore,
+            @Nullable final android.graphics.Rect newBbox) {
+        if (newHighlightScore == highlightScore
+                && newCircleScore == circleScore
+                && (newBbox == null ? bbox == null : newBbox.equals(bbox))) {
+            return this;
         }
+        return new DetectedNumber(value, line, lineIndex, keyword,
+                newHighlightScore, newCircleScore, newBbox);
     }
 
 
@@ -114,40 +109,18 @@ public final class DetectedNumber {
     }
 
 
-    /**
-     * True if Tesseract found a value AND the visual signal says the user
-     * marked this number — i.e. the strongest "this is the total" signal
-     * we have (a hand-written digit the user circled or highlighted).
-     */
-    public boolean isHandwrittenAndMarked() {
-        return handwritingValue != null && isVisuallyEmphasised();
-    }
-
-
-    /**
-     * The "effective" value for the model: if Tesseract found a number
-     * and the number is visually emphasised, return that. Otherwise the
-     * ML Kit value.
-     */
-    public double effectiveValue() {
-        if (isHandwrittenAndMarked()) {
-            return handwritingValue;
-        }
-
-        return value;
-    }
-
-
+    @NonNull
     @Override
     public String toString() {
-        String base = keyword == null
-                ? String.valueOf(value)
-                : value + " (line " + lineIndex + ", keyword=" + keyword + ")";
-
+        final String base;
+        if (keyword == null) {
+            base = String.valueOf(value);
+        } else {
+            base = value + " (line " + lineIndex + ", keyword=" + keyword + ")";
+        }
         if (isVisuallyEmphasised()) {
             return base + String.format(" [hl=%.2f cr=%.2f]", highlightScore, circleScore);
         }
-
         return base;
     }
 }

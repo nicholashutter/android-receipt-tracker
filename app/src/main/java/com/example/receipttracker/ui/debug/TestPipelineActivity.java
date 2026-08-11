@@ -20,10 +20,6 @@ import android.widget.Toast;
 
 import com.example.receipttracker.R;
 
-import com.example.receipttracker.data.AppDatabase;
-
-import com.example.receipttracker.data.Receipt;
-
 import com.example.receipttracker.log.Logger;
 
 import com.example.receipttracker.match.LinearLearner;
@@ -51,311 +47,331 @@ import com.google.android.material.button.MaterialButton;
 
 import java.io.File;
 
+import java.util.List;
+
+import java.util.Locale;
+
 
 /**
- * Debug-only activity that exercises the full receipt pipeline against a
- * caller-supplied image path. The path is read from Intent extra
+ * Debug-only activity that exercises the full receipt pipeline against
+ * a caller-supplied image path. The path is read from Intent extra
  * {@code extra_image_path} (or {@code extra_image_uri} as a fallback).
  *
- * Flow:
- *   1. Open the image, downscale to 1600px
- *   2. Save a copy under app/receipts/ via ReceiptImageStore
- *   3. Run ML Kit OCR
- *   4. Run ReceiptParser
- *   5. Show all intermediate results on screen and in the log
+ * <p>Flow: open the image → downscale to 1600px → save under
+ * {@code app/receipts/} via {@link ReceiptImageStore} → run ML Kit
+ * OCR → run {@link ReceiptParser} → show all intermediate results
+ * on screen and in the log.</p>
  *
- * This lets us run a regression receipt through the pipeline from a
- * shell command: `adb shell am start -n .../TestPipelineActivity --es
- * extra_image_path /sdcard/Pictures/sample_receipt.jpg`
+ * <p>Lets us run a regression receipt through the pipeline from a
+ * shell command: {@code adb shell am start -n .../TestPipelineActivity
+ * --es extra_image_path /sdcard/Pictures/sample_receipt.jpg}</p>
  */
 public class TestPipelineActivity extends Activity {
 
-    // Cached so the "Open in editor" button can re-use the last successful run.
+    private static final String TAG = "TestPipe";
+    private static final String EXTRA_IMAGE_PATH = "extra_image_path";
+    private static final String EXTRA_IMAGE_URI = "extra_image_uri";
+    private static final int PIPELINE_INPUT_DIM = 1600;
+    private static final int COPY_BUFFER_SIZE = 8192;
+    private static final String COPY_TARGET_FILENAME = "pipeline_in.jpg";
+    private static final String RUNNING_LABEL = "Running pipeline...";
+    private static final String PIPELINE_DONE_TOAST = "Done — see logs";
+    private static final String RUN_PIPELINE_FIRST = "Run the pipeline first";
+    private static final String NULL_RAW_TEXT_LABEL = "(null)";
+    private static final String ADJUSTED_LABEL = "  [adjusted]";
+    private static final String PRICE_LABEL = "[PRICE]";
+    private static final String DROP_LABEL = "[drop] ";
+    private static final String BIAS_LABEL = "bias";
+
+
+    // Cached so the "Open in editor" button can re-use the last
+    // successful run. All five are MUTABLE.
     private String lastSavedPath;
-
     private String lastRawText;
-
     private String lastMerchant;
-
-    private long lastDateMillis;
-
-    private double lastAmount;
-
-    private MaterialButton btnOpenEditor;
+    private Long lastDateMillis;
+    private Double lastAmount;
+    private MaterialButton openEditorButton;
 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         Logger.section("TEST PIPELINE");
-
-        Logger.i("TestPipe", "onCreate");
-
+        Logger.i(TAG, "onCreate");
         setContentView(R.layout.activity_test_pipeline);
 
+        final TextView resultView = findViewById(R.id.tv_result);
+        final MaterialButton runButton = findViewById(R.id.btn_run);
+        openEditorButton = findViewById(R.id.btn_open_editor);
 
-        TextView tvResult = findViewById(R.id.tv_result);
+        final String pathExtra = getIntent().getStringExtra(EXTRA_IMAGE_PATH);
+        final Uri uriExtra = getIntent().getParcelableExtra(EXTRA_IMAGE_URI);
+        Logger.i(TAG, "path extra: " + pathExtra + ", uri extra: " + uriExtra);
 
-        MaterialButton btnRun = findViewById(R.id.btn_run);
+        runButton.setOnClickListener(clickedView -> runPipeline(pathExtra, uriExtra, resultView));
+        openEditorButton.setOnClickListener(clickedView -> openInEditor());
 
-        btnOpenEditor = findViewById(R.id.btn_open_editor);
-
-
-        String pathExtra = getIntent().getStringExtra("extra_image_path");
-
-        Uri uriExtra = getIntent().getParcelableExtra("extra_image_uri");
-
-        Logger.i("TestPipe", "path extra: " + pathExtra + ", uri extra: " + uriExtra);
-
-
-        btnRun.setOnClickListener(v -> runPipeline(pathExtra, uriExtra, tvResult));
-
-        btnOpenEditor.setOnClickListener(v -> openInEditor());
-
-        runPipeline(pathExtra, uriExtra, tvResult);
+        runPipeline(pathExtra, uriExtra, resultView);
     }
 
 
     private void openInEditor() {
         if (lastSavedPath == null) {
-            Toast.makeText(this, "Run the pipeline first", Toast.LENGTH_SHORT).show();
-
+            Toast.makeText(this, RUN_PIPELINE_FIRST, Toast.LENGTH_SHORT).show();
             return;
         }
-
-        // Don't pre-insert the receipt. The editor is a new-receipt session
-        // and will insert on save, with auto-pick firing on the OCR text
-        // we pass in. (Pre-inserting made the editor think it was editing
-        // an existing row, which skipped the auto-pick path.)
+        // Don't pre-insert the receipt. The editor is a new-receipt
+        // session and will insert on save, with auto-pick firing on
+        // the OCR text we pass in. (Pre-inserting made the editor
+        // think it was editing an existing row, which skipped the
+        // auto-pick path.)
         runOnUiThread(() -> {
-            Intent i = new Intent(this, EditReceiptActivity.class);
-
-            i.putExtra(EditReceiptActivity.EXTRA_PHOTO_PATH, lastSavedPath);
-
-            i.putExtra(EditReceiptActivity.EXTRA_RAW_TEXT, lastRawText);
-
-            i.putExtra(EditReceiptActivity.EXTRA_MERCHANT, lastMerchant);
-
-            i.putExtra(EditReceiptActivity.EXTRA_AMOUNT, lastAmount);
-
-            i.putExtra(EditReceiptActivity.EXTRA_DATE_MILLIS, lastDateMillis);
-
-            startActivity(i);
+            final Intent editorIntent = new Intent(this, EditReceiptActivity.class);
+            editorIntent.putExtra(EditReceiptActivity.EXTRA_PHOTO_PATH, lastSavedPath);
+            editorIntent.putExtra(EditReceiptActivity.EXTRA_RAW_TEXT, lastRawText);
+            editorIntent.putExtra(EditReceiptActivity.EXTRA_MERCHANT, lastMerchant);
+            editorIntent.putExtra(EditReceiptActivity.EXTRA_AMOUNT, lastAmount);
+            editorIntent.putExtra(EditReceiptActivity.EXTRA_DATE_MILLIS, lastDateMillis);
+            startActivity(editorIntent);
         });
     }
 
 
-    private void runPipeline(String pathExtra, Uri uriExtra, TextView tvResult) {
-        tvResult.setText("Running pipeline...");
-
+    private void runPipeline(String pathExtra, Uri uriExtra, TextView resultView) {
+        resultView.setText(RUNNING_LABEL);
         AppExecutors.get().diskIO().execute(() -> {
-            StringBuilder sb = new StringBuilder();
-
+            final StringBuilder logBuilder = new StringBuilder();
             try {
-                File saved = null;
-
-                Bitmap bmp = null;
-
-                if (pathExtra != null) {
-                    // Scoped storage: we can't read /sdcard/... via raw File API on
-                    // API 29+, so copy the file to our private dir first.
-                    File src = new File(pathExtra);
-
-                    Logger.i("TestPipe", "Reading from path: " + src.getAbsolutePath()
-                            + " exists=" + src.exists() + " size=" + src.length());
-
-                    File copied = new File(getFilesDir(), "pipeline_in.jpg");
-
-                    try (java.io.InputStream in = new java.io.FileInputStream(src);
-
-                         java.io.OutputStream out = new java.io.FileOutputStream(copied)) {
-                        byte[] buf = new byte[8192];
-
-                        int n;
-                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-                    }
-
-                    Logger.i("TestPipe", "Copied to " + copied.getAbsolutePath()
-                            + " size=" + copied.length());
-
-                    bmp = ReceiptImageStore.decodeSampled(copied.getAbsolutePath(), 1600, 1600);
-
-                    if (bmp == null) throw new IllegalStateException("decodeSampled returned null");
-
-                    saved = ReceiptImageStore.saveBitmap(this, bmp);
-                } else if (uriExtra != null) {
-                    Logger.i("TestPipe", "Importing from URI: " + uriExtra);
-
-                    saved = ReceiptImageStore.importFromUri(this, uriExtra);
-
-                    bmp = ReceiptImageStore.decodeSampled(saved.getAbsolutePath(), 1600, 1600);
-                } else {
-                    throw new IllegalStateException("No image path or URI supplied");
-                }
-
-                sb.append("Image: ").append(bmp.getWidth()).append("x").append(bmp.getHeight())
-                        .append("\nSaved: ").append(saved.getAbsolutePath())
-                        .append("  size=").append(saved.length()).append(" bytes\n\n");
-
-
-                Logger.i("TestPipe", "Running OCR on " + bmp.getWidth() + "x" + bmp.getHeight());
-
-                String rawText = ReceiptOcr.recognizeText(bmp);
-
-                int rawTextLen;
-
-                if (rawText == null) {
-                    rawTextLen = 0;
-                } else {
-                    rawTextLen = rawText.length();
-                }
-
-                Logger.i("TestPipe", "OCR raw text length: " + rawTextLen);
-
-                String rawTextDisplay;
-
-                if (rawText == null) {
-                    rawTextDisplay = "(null)";
-                } else {
-                    rawTextDisplay = rawText;
-                }
-
-                sb.append("=== RAW OCR TEXT ===\n").append(rawTextDisplay)
-                        .append("\n\n");
-
-
-                Logger.i("TestPipe", "Running parser");
-
-                ParsedReceipt parsed = ReceiptParser.parse(rawText);
-
-                Logger.i("TestPipe", "Parser result: " + parsed);
-
-                sb.append("=== PARSED ===\n");
-
-                sb.append("merchant: ").append(parsed.merchant).append("\n");
-
-                sb.append("dateMillis: ").append(parsed.dateMillis).append("\n");
-
-                sb.append("amount: ").append(parsed.amount).append("\n\n");
-
-
-                // Cache for the "Open in editor" button.
-                lastSavedPath = saved.getAbsolutePath();
-
-                lastRawText = rawText;
-
-                lastMerchant = parsed.merchant;
-
-                lastDateMillis = parsed.dateMillis;
-
-                lastAmount = parsed.amount;
-
-
-                // === Now exercise the TotalVerifier against every detected number ===
-                Logger.i("TestPipe", "Running TotalVerifier for each detected number");
-
-                java.util.List<DetectedNumber> numbers = ReceiptParser.extractAllNumbers(rawText);
-
-                sb.append("=== DETECTED NUMBERS (").append(numbers.size()).append(") ===\n");
-
-                for (DetectedNumber n : numbers) {
-                    sb.append(String.format(java.util.Locale.US,
-                            "  $%.2f  line=%d  keyword=%s  \"%s\"\n",
-                            n.value, n.lineIndex, n.keyword, n.line.trim()));
-                }
-
-
-                // === STAGE 1: PriceClassifier ===
-                sb.append("\n=== STAGE 1: PRICE CLASSIFIER (trained weights) ===\n");
-
-                double[] pw = PriceClassifier.getWeights();
-
-                for (int i = 0; i < PriceClassifier.FEATURE_NAMES.length; i++) {
-                    sb.append(String.format(java.util.Locale.US,
-                            "  %-22s = %+.3f\n", PriceClassifier.FEATURE_NAMES[i], pw[i]));
-                }
-
-                sb.append(String.format(java.util.Locale.US,
-                        "  %-22s = %+.3f\n", "bias", PriceClassifier.getBias()));
-
-                sb.append("\n--- per-number P(is price) ---\n");
-
-                for (DetectedNumber n : numbers) {
-                    double[] f = PriceClassifier.extractFeatures(n);
-
-                    double p = PriceClassifier.predictProbability(f);
-
-                    String priceLabel;
-
-                    if (p >= PriceClassifier.PRICE_THRESHOLD) {
-                        priceLabel = "[PRICE]";
-                    } else {
-                        priceLabel = "[drop] ";
-                    }
-
-                    sb.append(String.format(java.util.Locale.US,
-                            "  $%-7.2f  P(isPrice)=%.3f  %s  line=%d  \"%s\"\n",
-                            n.value, p,
-                            priceLabel,
-                            n.lineIndex, n.line.trim()));
-                }
-
-
-                // === STAGE 2: LinearLearner (TotalLearner) ===
-                sb.append("\n=== STAGE 2: LINEAR LEARNER (trained weights) ===\n");
-
-                double[] w = LinearLearner.getWeights();
-
-                for (int i = 0; i < LinearLearner.FEATURE_NAMES.length; i++) {
-                    sb.append(String.format(java.util.Locale.US,
-                            "  %-22s = %+.3f\n", LinearLearner.FEATURE_NAMES[i], w[i]));
-                }
-
-                sb.append(String.format(java.util.Locale.US,
-                        "  %-22s = %+.3f\n", "bias", LinearLearner.getBias()));
-
-
-                // === Final verdict for each candidate ===
-                sb.append("\n=== VERIFIER (for each candidate) ===\n");
-
-                for (DetectedNumber n : numbers) {
-                    TotalVerifier.Result r = TotalVerifier.verify(n.value, numbers);
-
-                    String adjustedLabel;
-
-                    if (r.wasAdjusted) {
-                        adjustedLabel = "  [adjusted]";
-                    } else {
-                        adjustedLabel = "";
-                    }
-
-                    sb.append(String.format(java.util.Locale.US,
-                            "  $%.2f  ->  total=$%.2f  conf=%.0f%%%s  P(price)=%.2f  P(total)=%.2f  P(best-alt)=%.2f\n",
-                            n.value, r.total, r.confidence * 100,
-                            adjustedLabel,
-                            r.priceProbability, r.candidateProbability, r.bestAlternativeProbability));
-                }
-
-            } catch (Exception e) {
-                Logger.e("TestPipe", "Pipeline failed", e);
-
-                sb.append("FAILED: ").append(e.getMessage());
+                final LoadedImage loaded = loadImage(pathExtra, uriExtra);
+                appendImageHeader(logBuilder, loaded);
+                final String rawText = runOcrAndReport(loaded.bitmap, logBuilder);
+                final ParsedReceipt parsed = runParserAndReport(rawText, logBuilder);
+                cacheLastRunResults(loaded.savedFile, rawText, parsed);
+                appendVerifierAndClassifierSections(loaded.bitmap, rawText, logBuilder);
+            } catch (Exception pipelineFailure) {
+                Logger.e(TAG, "Pipeline failed", pipelineFailure);
+                logBuilder.append("FAILED: ").append(pipelineFailure.getMessage());
             }
 
-            final String result = sb.toString();
-
-            runOnUiThread(() -> {
-                tvResult.setText(result);
-
-                tvResult.setVisibility(View.VISIBLE);
-
-                if (lastSavedPath != null && btnOpenEditor != null) {
-                    btnOpenEditor.setEnabled(true);
-                }
-
-                Toast.makeText(this, "Done — see logs", Toast.LENGTH_SHORT).show();
-            });
+            final String finalResult = logBuilder.toString();
+            runOnUiThread(() -> publishResult(resultView, finalResult));
         });
+    }
+
+
+    /** Loaded image data: the in-memory bitmap plus the on-disk copy we saved. */
+    private static final class LoadedImage {
+        final Bitmap bitmap;
+        final File savedFile;
+
+        LoadedImage(Bitmap bitmap, File savedFile) {
+            this.bitmap = bitmap;
+            this.savedFile = savedFile;
+        }
+    }
+
+
+    private LoadedImage loadImage(String pathExtra, Uri uriExtra) throws Exception {
+        if (pathExtra != null) {
+            return loadImageFromPath(pathExtra);
+        }
+        if (uriExtra != null) {
+            return loadImageFromUri(uriExtra);
+        }
+        throw new IllegalStateException("No image path or URI supplied");
+    }
+
+
+    private LoadedImage loadImageFromPath(String pathExtra) throws Exception {
+        // Scoped storage: we can't read /sdcard/... via raw File API
+        // on API 29+, so copy the file to our private dir first.
+        final File sourceFile = new File(pathExtra);
+        Logger.i(TAG, "Reading from path: " + sourceFile.getAbsolutePath()
+                + " exists=" + sourceFile.exists() + " size=" + sourceFile.length());
+
+        final File copiedFile = new File(getFilesDir(), COPY_TARGET_FILENAME);
+        try (java.io.InputStream input = new java.io.FileInputStream(sourceFile);
+             java.io.OutputStream output = new java.io.FileOutputStream(copiedFile)) {
+            final byte[] buffer = new byte[COPY_BUFFER_SIZE];
+            int bytesRead;
+            while ((bytesRead = input.read(buffer)) > 0) {
+                output.write(buffer, 0, bytesRead);
+            }
+        }
+        Logger.i(TAG, "Copied to " + copiedFile.getAbsolutePath()
+                + " size=" + copiedFile.length());
+
+        final Bitmap decoded = ReceiptImageStore.decodeSampled(
+                copiedFile.getAbsolutePath(), PIPELINE_INPUT_DIM, PIPELINE_INPUT_DIM);
+        if (decoded == null) {
+            throw new IllegalStateException("decodeSampled returned null");
+        }
+        final File saved = ReceiptImageStore.saveBitmap(this, decoded);
+        return new LoadedImage(decoded, saved);
+    }
+
+
+    private LoadedImage loadImageFromUri(Uri uriExtra) throws Exception {
+        Logger.i(TAG, "Importing from URI: " + uriExtra);
+        final File saved = ReceiptImageStore.importFromUri(this, uriExtra);
+        final Bitmap decoded = ReceiptImageStore.decodeSampled(
+                saved.getAbsolutePath(), PIPELINE_INPUT_DIM, PIPELINE_INPUT_DIM);
+        return new LoadedImage(decoded, saved);
+    }
+
+
+    private void appendImageHeader(StringBuilder logBuilder, LoadedImage loaded) {
+        final Bitmap bitmap = loaded.bitmap;
+        final File saved = loaded.savedFile;
+        logBuilder.append("Image: ").append(bitmap.getWidth()).append("x").append(bitmap.getHeight())
+                .append("\nSaved: ").append(saved.getAbsolutePath())
+                .append("  size=").append(saved.length()).append(" bytes\n\n");
+        Logger.i(TAG, "Running OCR on " + bitmap.getWidth() + "x" + bitmap.getHeight());
+    }
+
+
+    private String runOcrAndReport(Bitmap bitmap, StringBuilder logBuilder) {
+        final String rawText = ReceiptOcr.recognizeText(bitmap);
+        final int rawTextLength;
+        if (rawText == null) {
+            rawTextLength = 0;
+        } else {
+            rawTextLength = rawText.length();
+        }
+        Logger.i(TAG, "OCR raw text length: " + rawTextLength);
+
+        final String displayText;
+        if (rawText == null) {
+            displayText = NULL_RAW_TEXT_LABEL;
+        } else {
+            displayText = rawText;
+        }
+        logBuilder.append("=== RAW OCR TEXT ===\n").append(displayText).append("\n\n");
+        return rawText;
+    }
+
+
+    private ParsedReceipt runParserAndReport(String rawText, StringBuilder logBuilder) {
+        Logger.i(TAG, "Running parser");
+        final ParsedReceipt parsed = ReceiptParser.parse(rawText);
+        Logger.i(TAG, "Parser result: " + parsed);
+
+        logBuilder.append("=== PARSED ===\n");
+        logBuilder.append("merchant: ").append(parsed.merchant).append("\n");
+        logBuilder.append("dateMillis: ").append(parsed.dateMillis).append("\n");
+        logBuilder.append("amount: ").append(parsed.amount).append("\n\n");
+        return parsed;
+    }
+
+
+    private void cacheLastRunResults(File savedFile, String rawText, ParsedReceipt parsed) {
+        lastSavedPath = savedFile.getAbsolutePath();
+        lastRawText = rawText;
+        lastMerchant = parsed.merchant;
+        lastDateMillis = parsed.dateMillis;
+        lastAmount = parsed.amount;
+    }
+
+
+    private void appendVerifierAndClassifierSections(Bitmap bitmap, String rawText, StringBuilder logBuilder) {
+        Logger.i(TAG, "Running TotalVerifier for each detected number");
+        final List<DetectedNumber> detectedNumbers = ReceiptParser.extractAllNumbers(rawText);
+        appendDetectedNumbers(logBuilder, detectedNumbers);
+
+        appendPriceClassifierWeights(logBuilder);
+        appendPriceClassifierPerNumber(logBuilder, detectedNumbers);
+
+        appendLinearLearnerWeights(logBuilder);
+
+        appendVerifierPerCandidate(logBuilder, detectedNumbers);
+    }
+
+
+    private void appendDetectedNumbers(StringBuilder logBuilder, List<DetectedNumber> detectedNumbers) {
+        logBuilder.append("=== DETECTED NUMBERS (").append(detectedNumbers.size()).append(") ===\n");
+        for (final DetectedNumber detectedNumber : detectedNumbers) {
+            logBuilder.append(String.format(Locale.US,
+                    "  $%.2f  line=%d  keyword=%s  \"%s\"\n",
+                    detectedNumber.value, detectedNumber.lineIndex,
+                    detectedNumber.keyword, detectedNumber.line.trim()));
+        }
+    }
+
+
+    private void appendPriceClassifierWeights(StringBuilder logBuilder) {
+        logBuilder.append("\n=== STAGE 1: PRICE CLASSIFIER (trained weights) ===\n");
+        final double[] priceWeights = PriceClassifier.getWeights();
+        for (int i = 0; i < PriceClassifier.FEATURE_NAMES.length; i++) {
+            logBuilder.append(String.format(Locale.US,
+                    "  %-22s = %+.3f\n", PriceClassifier.FEATURE_NAMES[i], priceWeights[i]));
+        }
+        logBuilder.append(String.format(Locale.US,
+                "  %-22s = %+.3f\n", BIAS_LABEL, PriceClassifier.getBias()));
+    }
+
+
+    private void appendPriceClassifierPerNumber(StringBuilder logBuilder, List<DetectedNumber> detectedNumbers) {
+        logBuilder.append("\n--- per-number P(is price) ---\n");
+        for (final DetectedNumber detectedNumber : detectedNumbers) {
+            final double[] features = PriceClassifier.extractFeatures(detectedNumber);
+            final double probability = PriceClassifier.predictProbability(features);
+
+            final String priceLabel;
+            if (probability >= PriceClassifier.PRICE_THRESHOLD) {
+                priceLabel = PRICE_LABEL;
+            } else {
+                priceLabel = DROP_LABEL;
+            }
+
+            logBuilder.append(String.format(Locale.US,
+                    "  $%-7.2f  P(isPrice)=%.3f  %s  line=%d  \"%s\"\n",
+                    detectedNumber.value, probability, priceLabel,
+                    detectedNumber.lineIndex, detectedNumber.line.trim()));
+        }
+    }
+
+
+    private void appendLinearLearnerWeights(StringBuilder logBuilder) {
+        logBuilder.append("\n=== STAGE 2: LINEAR LEARNER (trained weights) ===\n");
+        final double[] learnerWeights = LinearLearner.getWeights();
+        for (int i = 0; i < LinearLearner.FEATURE_NAMES.length; i++) {
+            logBuilder.append(String.format(Locale.US,
+                    "  %-22s = %+.3f\n", LinearLearner.FEATURE_NAMES[i], learnerWeights[i]));
+        }
+        logBuilder.append(String.format(Locale.US,
+                "  %-22s = %+.3f\n", BIAS_LABEL, LinearLearner.getBias()));
+    }
+
+
+    private void appendVerifierPerCandidate(StringBuilder logBuilder, List<DetectedNumber> detectedNumbers) {
+        logBuilder.append("\n=== VERIFIER (for each candidate) ===\n");
+        for (final DetectedNumber detectedNumber : detectedNumbers) {
+            final TotalVerifier.Result verdict = TotalVerifier.verify(detectedNumber.value, detectedNumbers);
+
+            final String adjustedLabel;
+            if (verdict.wasAdjusted) {
+                adjustedLabel = ADJUSTED_LABEL;
+            } else {
+                adjustedLabel = "";
+            }
+
+            logBuilder.append(String.format(Locale.US,
+                    "  $%.2f  ->  total=$%.2f  conf=%.0f%%%s  P(price)=%.2f  P(total)=%.2f  P(best-alt)=%.2f\n",
+                    detectedNumber.value, verdict.total, verdict.confidence * 100,
+                    adjustedLabel,
+                    verdict.priceProbability, verdict.candidateProbability,
+                    verdict.bestAlternativeProbability));
+        }
+    }
+
+
+    private void publishResult(TextView resultView, String finalResult) {
+        resultView.setText(finalResult);
+        resultView.setVisibility(View.VISIBLE);
+        if (lastSavedPath != null && openEditorButton != null) {
+            openEditorButton.setEnabled(true);
+        }
+        Toast.makeText(this, PIPELINE_DONE_TOAST, Toast.LENGTH_SHORT).show();
     }
 }

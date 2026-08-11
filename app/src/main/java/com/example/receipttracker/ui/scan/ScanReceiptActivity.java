@@ -55,6 +55,8 @@ import com.example.receipttracker.R;
 
 import com.example.receipttracker.log.Logger;
 
+import com.example.receipttracker.ocr.ImageQualityGate;
+
 import com.example.receipttracker.ocr.ReceiptImageStore;
 
 import com.example.receipttracker.ocr.ReceiptOcr;
@@ -75,30 +77,35 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 
+/**
+ * Camera-driven receipt capture. Two entry points: a live preview
+ * with a capture button, and a "pick from gallery" button for images
+ * already on the device. After capture (or pick), the bitmap is OCR'd
+ * and the user is forwarded to the editor.
+ */
 public class ScanReceiptActivity extends AppCompatActivity {
 
+    private static final String TAG = "Scan";
     private static final int MAX_IMAGE_DIM = 1600;
-
+    private static final int CAMERA_PERMISSION_REQUEST = 1;
+    private static final int REQ_EDIT = 9001;
+    private static final int IO_BUFFER_SIZE = 8192;
+    private static final int INVALID_DIMENSION = 0;
+    private static final String LABEL_RETAKE = "Retake";
+    private static final String IMAGE_MIME = "image/*";
 
     private PreviewView previewView;
-
-    private ImageView ivCaptured;
-
-    private TextView tvHint;
-
-    private TextView tvProcessing;
-
-    private ProgressBar progress;
-
-    private MaterialButton btnCapture;
-
-    private MaterialButton btnPickGallery;
-
+    private ImageView capturedView;
+    private TextView hintView;
+    private TextView processingView;
+    private ProgressBar progressBar;
+    private MaterialButton captureButton;
+    private MaterialButton pickGalleryButton;
 
     private ImageCapture imageCapture;
-
     private ExecutorService cameraExecutor;
 
+    // MUTABLE: toggled on capture/retake.
     private boolean showingResult = false;
 
 
@@ -111,7 +118,6 @@ public class ScanReceiptActivity extends AppCompatActivity {
                 }
             });
 
-
     private final ActivityResultLauncher<String> pickImageLauncher =
             registerForActivityResult(new ActivityResultContracts.GetContent(), uri -> {
                 if (uri != null) handlePickedImage(uri);
@@ -121,91 +127,64 @@ public class ScanReceiptActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        Logger.i("Scan", "onCreate");
-
+        Logger.i(TAG, "onCreate");
         setContentView(R.layout.activity_scan_receipt);
 
-
         previewView = findViewById(R.id.preview);
-
-        ivCaptured = findViewById(R.id.iv_captured);
-
-        tvHint = findViewById(R.id.tv_hint);
-
-        tvProcessing = findViewById(R.id.tv_processing);
-
-        progress = findViewById(R.id.progress);
-
-        btnCapture = findViewById(R.id.btn_capture);
-
-        btnPickGallery = findViewById(R.id.btn_pick_gallery);
-
+        capturedView = findViewById(R.id.iv_captured);
+        hintView = findViewById(R.id.tv_hint);
+        processingView = findViewById(R.id.tv_processing);
+        progressBar = findViewById(R.id.progress);
+        captureButton = findViewById(R.id.btn_capture);
+        pickGalleryButton = findViewById(R.id.btn_pick_gallery);
 
         cameraExecutor = Executors.newSingleThreadExecutor();
 
-
-        btnCapture.setOnClickListener(v -> {
-            Logger.i("Scan", "btn_capture clicked (showingResult=" + showingResult + ")");
-
+        captureButton.setOnClickListener(clickedView -> {
+            Logger.i(TAG, "btn_capture clicked (showingResult=" + showingResult + ")");
             if (showingResult) {
-                // Tapping "capture" after a result just resets to live preview.
                 resetToCamera();
             } else {
                 capturePhoto();
             }
         });
-
-        btnPickGallery.setOnClickListener(v -> {
-            Logger.i("Scan", "btn_pick_gallery clicked");
-
-            pickImageLauncher.launch("image/*");
+        pickGalleryButton.setOnClickListener(clickedView -> {
+            Logger.i(TAG, "btn_pick_gallery clicked");
+            pickImageLauncher.launch(IMAGE_MIME);
         });
-
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED) {
-            Logger.i("Scan", "Camera permission already granted");
-
+            Logger.i(TAG, "Camera permission already granted");
             startCamera();
         } else {
-            Logger.i("Scan", "Requesting camera permission");
-
+            Logger.i(TAG, "Requesting camera permission");
             requestCameraPermission.launch(Manifest.permission.CAMERA);
         }
     }
 
 
     private void startCamera() {
-        Logger.i("Scan", "startCamera: requesting ProcessCameraProvider");
-
-        ListenableFuture<ProcessCameraProvider> future =
+        Logger.i(TAG, "startCamera: requesting ProcessCameraProvider");
+        final ListenableFuture<ProcessCameraProvider> providerFuture =
                 ProcessCameraProvider.getInstance(this);
-
-        future.addListener(() -> {
+        providerFuture.addListener(() -> {
             try {
-                ProcessCameraProvider provider = future.get();
-
-                Preview preview = new Preview.Builder().build();
-
+                final ProcessCameraProvider provider = providerFuture.get();
+                final Preview preview = new Preview.Builder().build();
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
-
 
                 imageCapture = new ImageCapture.Builder()
                         .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                         .build();
 
-
                 provider.unbindAll();
-
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA,
                         preview, imageCapture);
-
-                Logger.i("Scan", "startCamera: camera bound to lifecycle");
-            } catch (Exception e) {
-                Logger.e("Scan", "startCamera: failed to bind camera", e);
-
-                Toast.makeText(this, "Camera unavailable: " + e.getMessage(),
+                Logger.i(TAG, "startCamera: camera bound to lifecycle");
+            } catch (Exception bindFailure) {
+                Logger.e(TAG, "startCamera: failed to bind camera", bindFailure);
+                Toast.makeText(this, "Camera unavailable: " + bindFailure.getMessage(),
                         Toast.LENGTH_LONG).show();
             }
         }, ContextCompat.getMainExecutor(this));
@@ -214,61 +193,35 @@ public class ScanReceiptActivity extends AppCompatActivity {
 
     private void capturePhoto() {
         if (imageCapture == null) {
-            Logger.w("Scan", "capturePhoto: imageCapture is null (camera not bound?)");
-
+            Logger.w(TAG, "capturePhoto: imageCapture is null (camera not bound?)");
             return;
         }
-
-        Logger.i("Scan", "capturePhoto: taking picture");
-
-        btnCapture.setEnabled(false);
-
-        progress.setVisibility(View.VISIBLE);
-
-        tvProcessing.setVisibility(View.VISIBLE);
-
+        Logger.i(TAG, "capturePhoto: taking picture");
+        showProgress(true);
 
         imageCapture.takePicture(cameraExecutor, new ImageCapture.OnImageCapturedCallback() {
             @Override
             public void onCaptureSuccess(@NonNull ImageProxy image) {
-                Logger.i("Scan", "capture: onCaptureSuccess (format=" + image.getFormat() + ")");
-
-                Bitmap bmp = imageProxyToBitmap(image);
-
+                Logger.i(TAG, "capture: onCaptureSuccess (format=" + image.getFormat() + ")");
+                final Bitmap captured = imageProxyToBitmap(image);
                 image.close();
-
-                if (bmp == null) {
-                    Logger.w("Scan", "capture: imageProxyToBitmap returned null");
-
+                if (captured == null) {
+                    Logger.w(TAG, "capture: imageProxyToBitmap returned null");
                     runOnUiThread(() -> {
-                        progress.setVisibility(View.GONE);
-
-                        tvProcessing.setVisibility(View.GONE);
-
-                        btnCapture.setEnabled(true);
-
-                        Toast.makeText(ScanReceiptActivity.this,
-                                "Capture failed", Toast.LENGTH_SHORT).show();
+                        showProgress(false);
+                        Toast.makeText(ScanReceiptActivity.this, "Capture failed",
+                                Toast.LENGTH_SHORT).show();
                     });
-
                     return;
                 }
-
-                runOnUiThread(() -> showCapturedAndOcr(bmp));
+                runOnUiThread(() -> showCapturedAndOcr(captured));
             }
-
 
             @Override
             public void onError(@NonNull ImageCaptureException exception) {
-                Logger.e("Scan", "capture: onError", exception);
-
+                Logger.e(TAG, "capture: onError", exception);
                 runOnUiThread(() -> {
-                    progress.setVisibility(View.GONE);
-
-                    tvProcessing.setVisibility(View.GONE);
-
-                    btnCapture.setEnabled(true);
-
+                    showProgress(false);
                     Toast.makeText(ScanReceiptActivity.this,
                             "Capture failed: " + exception.getMessage(),
                             Toast.LENGTH_SHORT).show();
@@ -278,86 +231,65 @@ public class ScanReceiptActivity extends AppCompatActivity {
     }
 
 
-    private Bitmap imageProxyToBitmap(ImageProxy proxy) {
+    private void showProgress(boolean visible) {
+        progressBar.setVisibility(visible ? View.VISIBLE : View.GONE);
+        processingView.setVisibility(visible ? View.VISIBLE : View.GONE);
+        captureButton.setEnabled(!visible);
+    }
+
+
+    private Bitmap imageProxyToBitmap(ImageProxy image) {
         try {
-            ByteBuffer buffer = proxy.getPlanes()[0].getBuffer();
-
-            byte[] bytes = new byte[buffer.remaining()];
-
+            final ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+            final byte[] bytes = new byte[buffer.remaining()];
             buffer.get(bytes);
-
-            Bitmap raw = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-
+            final Bitmap raw = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
             if (raw == null) return null;
 
             // Downscale to keep memory and OCR time reasonable.
-            int w = raw.getWidth(), h = raw.getHeight();
-
-            int longest = Math.max(w, h);
-
+            final int width = raw.getWidth();
+            final int height = raw.getHeight();
+            final int longest = Math.max(width, height);
             if (longest > MAX_IMAGE_DIM) {
-                float scale = MAX_IMAGE_DIM / (float) longest;
-
-                int nw = Math.round(w * scale), nh = Math.round(h * scale);
-
-                Logger.i("Scan", "Downscaling " + w + "x" + h + " -> " + nw + "x" + nh
+                final float scale = MAX_IMAGE_DIM / (float) longest;
+                final int newWidth = Math.round(width * scale);
+                final int newHeight = Math.round(height * scale);
+                Logger.i(TAG, "Downscaling " + width + "x" + height
+                        + " -> " + newWidth + "x" + newHeight
                         + " (longest " + longest + " > " + MAX_IMAGE_DIM + ")");
-
-                return Bitmap.createScaledBitmap(raw, nw, nh, true);
+                return Bitmap.createScaledBitmap(raw, newWidth, newHeight, true);
             }
-
-            Logger.i("Scan", "Image " + w + "x" + h + " fits within limit, no downscale");
-
+            Logger.i(TAG, "Image " + width + "x" + height + " fits within limit, no downscale");
             return raw;
-        } catch (Exception e) {
-            Logger.e("Scan", "imageProxyToBitmap failed", e);
-
+        } catch (Exception decodeFailure) {
+            Logger.e(TAG, "imageProxyToBitmap failed", decodeFailure);
             return null;
         }
     }
 
 
     private void handlePickedImage(Uri uri) {
-        Logger.i("Scan", "handlePickedImage: uri=" + uri);
-
-        progress.setVisibility(View.VISIBLE);
-
-        tvProcessing.setVisibility(View.VISIBLE);
-
-        btnCapture.setEnabled(false);
+        Logger.i(TAG, "handlePickedImage: uri=" + uri);
+        showProgress(true);
 
         cameraExecutor.execute(() -> {
             try {
-                File f = ReceiptImageStore.importFromUri(this, uri);
-
-                Bitmap bmp = ReceiptImageStore.decodeSampled(
-                        f.getAbsolutePath(), MAX_IMAGE_DIM, MAX_IMAGE_DIM);
-
+                final File pickedFile = ReceiptImageStore.importFromUri(this, uri);
+                final Bitmap decoded = ReceiptImageStore.decodeSampled(
+                        pickedFile.getAbsolutePath(), MAX_IMAGE_DIM, MAX_IMAGE_DIM);
                 runOnUiThread(() -> {
-                    if (bmp != null) {
-                        showCapturedAndOcr(bmp);
+                    if (decoded != null) {
+                        showCapturedAndOcr(decoded);
                     } else {
-                        progress.setVisibility(View.GONE);
-
-                        tvProcessing.setVisibility(View.GONE);
-
-                        btnCapture.setEnabled(true);
-
-                        Toast.makeText(this, "Couldn't decode that image",
-                                Toast.LENGTH_SHORT).show();
+                        showProgress(false);
+                        Toast.makeText(this, "Couldn't decode that image", Toast.LENGTH_SHORT).show();
                     }
                 });
-            } catch (Exception e) {
-                Logger.e("Scan", "handlePickedImage failed", e);
-
+            } catch (Exception pickFailure) {
+                Logger.e(TAG, "handlePickedImage failed", pickFailure);
                 runOnUiThread(() -> {
-                    progress.setVisibility(View.GONE);
-
-                    tvProcessing.setVisibility(View.GONE);
-
-                    btnCapture.setEnabled(true);
-
-                    Toast.makeText(this, "Couldn't load image: " + e.getMessage(),
+                    showProgress(false);
+                    Toast.makeText(this, "Couldn't load image: " + pickFailure.getMessage(),
                             Toast.LENGTH_SHORT).show();
                 });
             }
@@ -365,110 +297,113 @@ public class ScanReceiptActivity extends AppCompatActivity {
     }
 
 
-    private void showCapturedAndOcr(Bitmap bmp) {
-        Logger.i("Scan", "showCapturedAndOcr: bitmap=" + bmp.getWidth() + "x" + bmp.getHeight());
-
-        ivCaptured.setImageBitmap(bmp);
-
-        ivCaptured.setVisibility(View.VISIBLE);
-
+    private void showCapturedAndOcr(Bitmap captured) {
+        Logger.i(TAG, "showCapturedAndOcr: bitmap=" + captured.getWidth() + "x" + captured.getHeight());
+        capturedView.setImageBitmap(captured);
+        capturedView.setVisibility(View.VISIBLE);
         previewView.setVisibility(View.GONE);
-
-        tvHint.setVisibility(View.GONE);
-
+        hintView.setVisibility(View.GONE);
         showingResult = true;
-
-        btnCapture.setText("Retake");
-
+        captureButton.setText(LABEL_RETAKE);
 
         cameraExecutor.execute(() -> {
-            String rawText = ReceiptOcr.recognizeText(bmp);
+            // Run the image quality gate in the same worker as the OCR
+            // (it's a few ms on a sampled-down bitmap). We never block
+            // — a poor-quality photo is still passed through, the user
+            // just gets a "consider retaking" toast so they know the
+            // result might be bad.
+            final ImageQualityGate.Verdict quality = ImageQualityGate.assess(captured);
+            Logger.i(TAG, "image quality: " + quality);
 
+            final String rawText = ReceiptOcr.recognizeText(captured);
             final String[] savedPath = new String[1];
 
             try {
-                File saved = ReceiptImageStore.saveBitmap(this, bmp);
-
-                if (saved != null) savedPath[0] = saved.getAbsolutePath();
-            } catch (Exception e) {
-                Logger.e("Scan", "Failed to persist captured bitmap", e);
+                final File savedFile = ReceiptImageStore.saveBitmap(this, captured);
+                if (savedFile != null) {
+                    savedPath[0] = savedFile.getAbsolutePath();
+                }
+            } catch (Exception saveFailure) {
+                Logger.e(TAG, "Failed to persist captured bitmap", saveFailure);
             }
 
-            final String finalRaw = rawText;
-
+            final String finalRawText = rawText;
+            final boolean acceptableQuality = quality.acceptable;
             runOnUiThread(() -> {
-                progress.setVisibility(View.GONE);
-
-                tvProcessing.setVisibility(View.GONE);
-
-                btnCapture.setEnabled(true);
-
-                if (rawText == null || rawText.trim().isEmpty()) {
-                    Logger.w("Scan", "OCR returned empty/null text");
-
-                    Toast.makeText(this, R.string.scan_no_text, Toast.LENGTH_LONG).show();
+                if (!acceptableQuality) {
+                    showQualityWarning(quality);
                 }
 
-                int rawLen;
-
-                if (finalRaw == null) {
-                    rawLen = 0;
-                } else {
-                    rawLen = finalRaw.length();
-                }
-
-                Logger.i("Scan", "Launching EditReceiptActivity, photoPath="
-                        + savedPath[0] + ", rawTextLen=" + rawLen);
-
-                Intent i = new Intent(this, EditReceiptActivity.class);
-
-                if (savedPath[0] != null) i.putExtra(EditReceiptActivity.EXTRA_PHOTO_PATH, savedPath[0]);
-
-                if (finalRaw == null) {
-                    i.putExtra(EditReceiptActivity.EXTRA_RAW_TEXT, "");
-                } else {
-                    i.putExtra(EditReceiptActivity.EXTRA_RAW_TEXT, finalRaw);
-                }
-
-                startActivityForResult(i, REQ_EDIT);
+                launchEditor(savedPath[0], finalRawText);
             });
         });
     }
 
 
-    private static final int REQ_EDIT = 9001;
+    private void showQualityWarning(ImageQualityGate.Verdict quality) {
+        final String message = "Photo quality is low (" + String.join(", ", quality.issues)
+                + "). The scan result may be inaccurate — consider retaking.";
+
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
+
+
+    private void launchEditor(String photoPath, String rawText) {
+        showProgress(false);
+
+        if (rawText == null || rawText.trim().isEmpty()) {
+            Logger.w(TAG, "OCR returned empty/null text");
+            Toast.makeText(this, R.string.scan_no_text, Toast.LENGTH_LONG).show();
+        }
+
+        final int rawLen;
+        if (rawText == null) {
+            rawLen = INVALID_DIMENSION;
+        } else {
+            rawLen = rawText.length();
+        }
+        Logger.i(TAG, "Launching EditReceiptActivity, photoPath=" + photoPath
+                + ", rawTextLen=" + rawLen);
+
+        final Intent editorIntent = new Intent(this, EditReceiptActivity.class);
+        if (photoPath != null) {
+            editorIntent.putExtra(EditReceiptActivity.EXTRA_PHOTO_PATH, photoPath);
+        }
+        final String rawTextExtra;
+        if (rawText == null) {
+            rawTextExtra = "";
+        } else {
+            rawTextExtra = rawText;
+        }
+        editorIntent.putExtra(EditReceiptActivity.EXTRA_RAW_TEXT, rawTextExtra);
+        startActivityForResult(editorIntent, REQ_EDIT);
+    }
 
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-
         if (requestCode == REQ_EDIT) {
-            // Whether saved or cancelled, finish the scan flow so the user returns to main.
+            // Whether saved or cancelled, finish the scan flow so the
+            // user returns to main.
             setResult(Activity.RESULT_OK, data);
-
             finish();
         }
     }
 
 
     private void resetToCamera() {
-        ivCaptured.setVisibility(View.GONE);
-
+        capturedView.setVisibility(View.GONE);
         previewView.setVisibility(View.VISIBLE);
-
-        tvHint.setVisibility(View.VISIBLE);
-
+        hintView.setVisibility(View.VISIBLE);
         showingResult = false;
-
-        btnCapture.setText(R.string.scan_capture);
+        captureButton.setText(R.string.scan_capture);
     }
 
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-
         if (cameraExecutor != null) cameraExecutor.shutdown();
     }
 }

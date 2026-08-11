@@ -22,8 +22,6 @@ import androidx.annotation.NonNull;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import androidx.lifecycle.ViewModelProvider;
-
 import androidx.recyclerview.widget.LinearLayoutManager;
 
 import androidx.recyclerview.widget.RecyclerView;
@@ -52,167 +50,161 @@ import com.example.receipttracker.util.MoneyUtils;
 import com.google.android.material.button.MaterialButton;
 
 
+import java.util.Collections;
+
 import java.util.List;
 
 
 /**
- * Detail view for a single budget: name, cap, live running spent amount,
- * progress bar, set-active toggle, edit, and a list of linked receipts.
+ * Detail view for a single budget: name, cap, live running spent
+ * amount, progress bar, set-active toggle, edit, and a list of
+ * linked receipts.
  */
 public class BudgetDetailActivity extends AppCompatActivity {
 
     public static final String EXTRA_BUDGET_ID = "budget_id";
 
-
     private static final String TAG = "BudgetDetail";
+
+    private static final int PROGRESS_PERCENT_MAX = 100;
+    private static final int INVALID_BUDGET_ID = -1;
+    private static final String PLACEHOLDER_NO_MERCHANT = "(no merchant)";
+    private static final String STATUS_UNMATCHED = "unmatched";
+    private static final String STATUS_MATCHED = "matched";
+    private static final String ACTIVE_BUDGET_LABEL = "Active budget";
+    private static final String SET_AS_ACTIVE_LABEL = "Set as active budget";
 
 
     private long budgetId;
 
     private BudgetDao budgetDao;
-
     private ReceiptDao receiptDao;
+    private final AppExecutors executors = AppExecutors.get();
 
-    private final AppExecutors exec = AppExecutors.get();
+    private TextView nameView;
+    private TextView activeChipView;
+    private TextView spentView;
+    private TextView capView;
+    private TextView remainingView;
+    private TextView noReceiptsView;
+    private android.widget.ProgressBar budgetProgressBar;
+    private MaterialButton setActiveButton;
+    private MaterialButton editButton;
+    private MaterialButton deleteButton;
+    private RecyclerView receiptsRecyclerView;
+    private LinkedReceiptsAdapter receiptsAdapter;
 
 
-    private TextView tvName, tvActiveChip, tvSpent, tvCap, tvRemaining, tvNoReceipts;
-
-    private android.widget.ProgressBar pbBudget;
-
-    private MaterialButton btnSetActive, btnEdit, btnDelete;
-
-    private RecyclerView rvReceipts;
-
-    private LinkedReceiptsAdapter adapter;
-
-
+    // MUTABLE: re-set by LiveData observer.
     private Budget currentBudget;
 
-    private double currentSpent = 0;
+    // MUTABLE: re-set by LiveData observer.
+    private double currentSpent = 0.0;
 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         Logger.section("BUDGET DETAIL");
 
-        budgetId = getIntent().getLongExtra(EXTRA_BUDGET_ID, -1);
-
+        budgetId = getIntent().getLongExtra(EXTRA_BUDGET_ID, INVALID_BUDGET_ID);
         Logger.i(TAG, "onCreate budgetId=" + budgetId);
 
-        if (budgetId < 0) { finish(); return; }
-
+        if (budgetId < 0L) {
+            finish();
+            return;
+        }
         setContentView(R.layout.activity_budget_detail);
 
-
         budgetDao = AppDatabase.get(this).budgetDao();
-
         receiptDao = AppDatabase.get(this).receiptDao();
 
+        nameView = findViewById(R.id.tv_name);
+        activeChipView = findViewById(R.id.tv_active_chip);
+        spentView = findViewById(R.id.tv_spent);
+        capView = findViewById(R.id.tv_cap);
+        remainingView = findViewById(R.id.tv_remaining);
+        noReceiptsView = findViewById(R.id.tv_no_receipts);
+        budgetProgressBar = findViewById(R.id.pb_budget);
+        setActiveButton = findViewById(R.id.btn_set_active);
+        editButton = findViewById(R.id.btn_edit);
+        deleteButton = findViewById(R.id.btn_delete);
+        receiptsRecyclerView = findViewById(R.id.rv_receipts);
 
-        tvName = findViewById(R.id.tv_name);
+        receiptsRecyclerView.setLayoutManager(new LinearLayoutManager(this));
+        receiptsAdapter = new LinkedReceiptsAdapter();
+        receiptsRecyclerView.setAdapter(receiptsAdapter);
 
-        tvActiveChip = findViewById(R.id.tv_active_chip);
-
-        tvSpent = findViewById(R.id.tv_spent);
-
-        tvCap = findViewById(R.id.tv_cap);
-
-        tvRemaining = findViewById(R.id.tv_remaining);
-
-        tvNoReceipts = findViewById(R.id.tv_no_receipts);
-
-        pbBudget = findViewById(R.id.pb_budget);
-
-        btnSetActive = findViewById(R.id.btn_set_active);
-
-        btnEdit = findViewById(R.id.btn_edit);
-
-        btnDelete = findViewById(R.id.btn_delete);
-
-        rvReceipts = findViewById(R.id.rv_receipts);
-
-
-        rvReceipts.setLayoutManager(new LinearLayoutManager(this));
-
-        adapter = new LinkedReceiptsAdapter();
-
-        rvReceipts.setAdapter(adapter);
-
-
-        budgetDao.getByIdLive(budgetId).observe(this, b -> {
-            if (b == null) { finish(); return; }
-
-            currentBudget = b;
-
+        budgetDao.getByIdLive(budgetId).observe(this, budget -> {
+            if (budget == null) {
+                finish();
+                return;
+            }
+            currentBudget = budget;
             renderBudget();
         });
 
-        budgetDao.sumSpentLive(budgetId).observe(this, s -> {
-            if (s == null) {
-                currentSpent = 0;
+        budgetDao.sumSpentLive(budgetId).observe(this, rawSpent -> {
+            final double spent;
+            if (rawSpent == null) {
+                spent = 0.0;
             } else {
-                currentSpent = s;
+                spent = rawSpent;
             }
-
+            currentSpent = spent;
             renderAmounts();
         });
 
-        receiptDao.getByBudgetLive(budgetId).observe(this, list -> {
-            adapter.set(list);
-
-            boolean listEmpty = list == null || list.isEmpty();
-
-            if (listEmpty) {
-                tvNoReceipts.setVisibility(View.VISIBLE);
+        receiptDao.getByBudgetLive(budgetId).observe(this, receipts -> {
+            receiptsAdapter.set(receipts);
+            final boolean isListEmpty = receipts == null || receipts.isEmpty();
+            if (isListEmpty) {
+                noReceiptsView.setVisibility(View.VISIBLE);
             } else {
-                tvNoReceipts.setVisibility(View.GONE);
+                noReceiptsView.setVisibility(View.GONE);
             }
-
-            if (listEmpty) {
-                rvReceipts.setVisibility(View.GONE);
+            if (isListEmpty) {
+                receiptsRecyclerView.setVisibility(View.GONE);
             } else {
-                rvReceipts.setVisibility(View.VISIBLE);
+                receiptsRecyclerView.setVisibility(View.VISIBLE);
             }
         });
 
+        setActiveButton.setOnClickListener(clickedView -> markCurrentActive());
+        editButton.setOnClickListener(clickedView -> showEditDialog());
+        deleteButton.setOnClickListener(clickedView -> showDeleteDialog());
+    }
 
-        btnSetActive.setOnClickListener(v -> {
-            exec.diskIO().execute(() -> {
-                if (currentBudget != null && !currentBudget.isActive) {
-                    budgetDao.setActive(currentBudget.id);
 
-                    Logger.i(TAG, "Set budget id=" + currentBudget.id + " as active");
-                }
-            });
+    private void markCurrentActive() {
+        executors.diskIO().execute(() -> {
+            if (currentBudget != null && !currentBudget.isActive) {
+                budgetDao.setActive(currentBudget.id);
+                Logger.i(TAG, "Set budget id=" + currentBudget.id + " as active");
+            }
         });
-
-        btnEdit.setOnClickListener(v -> showEditDialog());
-
-        btnDelete.setOnClickListener(v -> showDeleteDialog());
     }
 
 
     private void renderBudget() {
         if (currentBudget == null) return;
 
-        tvName.setText(currentBudget.name);
+        nameView.setText(currentBudget.name);
 
         if (currentBudget.isActive) {
-            tvActiveChip.setVisibility(View.VISIBLE);
+            activeChipView.setVisibility(View.VISIBLE);
         } else {
-            tvActiveChip.setVisibility(View.GONE);
+            activeChipView.setVisibility(View.GONE);
         }
 
+        final String activeButtonLabel;
         if (currentBudget.isActive) {
-            btnSetActive.setText("Active budget");
+            activeButtonLabel = ACTIVE_BUDGET_LABEL;
         } else {
-            btnSetActive.setText("Set as active budget");
+            activeButtonLabel = SET_AS_ACTIVE_LABEL;
         }
-
-        btnSetActive.setEnabled(!currentBudget.isActive);
+        setActiveButton.setText(activeButtonLabel);
+        setActiveButton.setEnabled(!currentBudget.isActive);
 
         renderAmounts();
     }
@@ -221,26 +213,26 @@ public class BudgetDetailActivity extends AppCompatActivity {
     private void renderAmounts() {
         if (currentBudget == null) return;
 
-        tvSpent.setText(MoneyUtils.format(currentSpent));
+        spentView.setText(MoneyUtils.format(currentSpent));
+        capView.setText("of " + MoneyUtils.format(currentBudget.maxAmount));
 
-        tvCap.setText("of " + MoneyUtils.format(currentBudget.maxAmount));
-
-        int pct = currentBudget.maxAmount > 0
-                ? (int) Math.min(100, Math.round(currentSpent * 100.0 / currentBudget.maxAmount))
-                : 0;
-
-        pbBudget.setProgress(pct);
-
-        double remaining = currentBudget.maxAmount - currentSpent;
-
-        if (remaining < 0) {
-            tvRemaining.setText("Over by " + MoneyUtils.format(-remaining));
-
-            tvRemaining.setTextColor(getColor(R.color.error));
+        final int progressPct;
+        if (currentBudget.maxAmount > 0.0) {
+            final double rawPercent = currentSpent * 100.0 / currentBudget.maxAmount;
+            final double clampedPercent = Math.min(PROGRESS_PERCENT_MAX, Math.round(rawPercent));
+            progressPct = (int) clampedPercent;
         } else {
-            tvRemaining.setText(MoneyUtils.format(remaining) + " remaining");
+            progressPct = 0;
+        }
+        budgetProgressBar.setProgress(progressPct);
 
-            tvRemaining.setTextColor(getColor(R.color.on_surface));
+        final double remaining = currentBudget.maxAmount - currentSpent;
+        if (remaining < 0.0) {
+            remainingView.setText("Over by " + MoneyUtils.format(-remaining));
+            remainingView.setTextColor(getColor(R.color.error));
+        } else {
+            remainingView.setText(MoneyUtils.format(remaining) + " remaining");
+            remainingView.setTextColor(getColor(R.color.on_surface));
         }
     }
 
@@ -248,80 +240,69 @@ public class BudgetDetailActivity extends AppCompatActivity {
     private void showEditDialog() {
         if (currentBudget == null) return;
 
-        View view = LayoutInflater.from(this).inflate(R.layout.dialog_create_budget, null, false);
+        final View dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_create_budget, null, false);
+        final TextView etName = dialogView.findViewById(R.id.et_name);
+        final TextView etMax = dialogView.findViewById(R.id.et_max);
+        final android.widget.CheckBox cbActive = dialogView.findViewById(R.id.cb_set_active);
 
-        ((android.widget.TextView) view.findViewById(R.id.et_name)).setText(currentBudget.name);
-
-        ((android.widget.TextView) view.findViewById(R.id.et_max)).setText(String.valueOf(currentBudget.maxAmount));
-
-        ((android.widget.CheckBox) view.findViewById(R.id.cb_set_active)).setChecked(currentBudget.isActive);
+        etName.setText(currentBudget.name);
+        etMax.setText(String.valueOf(currentBudget.maxAmount));
+        cbActive.setChecked(currentBudget.isActive);
 
         new AlertDialog.Builder(this)
                 .setTitle("Edit budget")
-                .setView(view)
+                .setView(dialogView)
                 .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton("Save", (d, w) -> {
-                    String name = ((android.widget.TextView) view.findViewById(R.id.et_name)).getText().toString().trim();
+                .setPositiveButton("Save", (dialogInterface, which) -> {
+                    final String enteredName = etName.getText().toString().trim();
+                    final String enteredMaxText = etMax.getText().toString().trim();
+                    final boolean wantActive = cbActive.isChecked();
 
-                    String maxStr = ((android.widget.TextView) view.findViewById(R.id.et_max)).getText().toString().trim();
-
-                    boolean wantActive = ((android.widget.CheckBox) view.findViewById(R.id.cb_set_active)).isChecked();
-
-                    if (name.isEmpty() || maxStr.isEmpty()) {
+                    if (enteredName.isEmpty() || enteredMaxText.isEmpty()) {
                         Toast.makeText(this, "Name and max are required", Toast.LENGTH_SHORT).show();
-
                         return;
                     }
-
-                    double max;
-
-                    try { max = Double.parseDouble(maxStr); }
-                    catch (NumberFormatException e) { Toast.makeText(this, "Invalid amount", Toast.LENGTH_SHORT).show(); return; }
-
-                    final double maxFinal = max;
-
-                    final String nameFinal = name;
-
-                    final boolean activeFinal = wantActive;
-
-                    exec.diskIO().execute(() -> {
-                        currentBudget.name = nameFinal;
-
-                        currentBudget.maxAmount = maxFinal;
-
-                        budgetDao.update(currentBudget);
-
-                        if (activeFinal && !currentBudget.isActive) {
-                            budgetDao.setActive(currentBudget.id);
-                        } else if (!activeFinal && currentBudget.isActive) {
-                            budgetDao.clearAllActive();
-                        }
-
-                        Logger.i(TAG, "Edited budget id=" + currentBudget.id);
-                    });
+                    final double parsedMax;
+                    try {
+                        parsedMax = Double.parseDouble(enteredMaxText);
+                    } catch (NumberFormatException parseFailure) {
+                        Toast.makeText(this, "Invalid amount", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    persistBudgetEdits(enteredName, parsedMax, wantActive);
                 })
                 .show();
     }
 
 
+    private void persistBudgetEdits(String newName, double newMax, boolean wantActive) {
+        executors.diskIO().execute(() -> {
+            final Budget updated = currentBudget.withName(newName).withMaxAmount(newMax);
+            budgetDao.update(updated);
+            if (wantActive && !updated.isActive) {
+                budgetDao.setActive(updated.id);
+            } else if (!wantActive && updated.isActive) {
+                budgetDao.clearAllActive();
+            }
+            Logger.i(TAG, "Edited budget id=" + currentBudget.id);
+        });
+    }
+
+
     private void showDeleteDialog() {
         if (currentBudget == null) return;
-
+        final String message = "'" + currentBudget.name + "' will be removed. Linked receipts will be unlinked but kept.";
         new AlertDialog.Builder(this)
                 .setTitle("Delete budget?")
-                .setMessage("'" + currentBudget.name + "' will be removed. Linked receipts will be unlinked but kept.")
+                .setMessage(message)
                 .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton("Delete", (d, w) -> {
-                    final long id = currentBudget.id;
-
-                    exec.diskIO().execute(() -> {
-                        receiptDao.clearBudgetOnReceipts(id);
-
-                        budgetDao.softDelete(id);
-
-                        Logger.i(TAG, "Soft-deleted budget id=" + id);
+                .setPositiveButton("Delete", (dialogInterface, which) -> {
+                    final long idToDelete = currentBudget.id;
+                    executors.diskIO().execute(() -> {
+                        receiptDao.clearBudgetOnReceipts(idToDelete);
+                        budgetDao.softDelete(idToDelete);
+                        Logger.i(TAG, "Soft-deleted budget id=" + idToDelete);
                     });
-
                     finish();
                 })
                 .show();
@@ -330,81 +311,81 @@ public class BudgetDetailActivity extends AppCompatActivity {
 
     // ============ adapter for linked receipts ============
 
-    class LinkedReceiptsAdapter extends RecyclerView.Adapter<LinkedReceiptsAdapter.VH> {
-        private List<Receipt> data = java.util.Collections.emptyList();
+    class LinkedReceiptsAdapter extends RecyclerView.Adapter<LinkedReceiptsAdapter.ReceiptViewHolder> {
 
-        void set(List<Receipt> d) {
-            if (d == null) {
-                this.data = java.util.Collections.emptyList();
+        // MUTABLE: re-set in set().
+        private List<Receipt> data = Collections.emptyList();
+
+
+        void set(List<Receipt> newData) {
+            if (newData == null) {
+                this.data = Collections.emptyList();
             } else {
-                this.data = d;
+                this.data = newData;
             }
-
             notifyDataSetChanged();
         }
 
-        @NonNull @Override
-        public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            return new VH(LayoutInflater.from(parent.getContext())
-                    .inflate(R.layout.item_receipt, parent, false));
+
+        @NonNull
+        @Override
+        public ReceiptViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            final View inflatedView = LayoutInflater.from(parent.getContext())
+                    .inflate(R.layout.item_receipt, parent, false);
+            return new ReceiptViewHolder(inflatedView);
         }
 
+
         @Override
-        public void onBindViewHolder(@NonNull VH h, int position) {
-            Receipt r = data.get(position);
+        public void onBindViewHolder(@NonNull ReceiptViewHolder holder, int position) {
+            final Receipt receipt = data.get(position);
 
-            String merchantText;
-
-            if (r.merchant == null || r.merchant.isEmpty()) {
-                merchantText = "(no merchant)";
+            final String merchantText;
+            if (receipt.merchant == null || receipt.merchant.isEmpty()) {
+                merchantText = PLACEHOLDER_NO_MERCHANT;
             } else {
-                merchantText = r.merchant;
+                merchantText = receipt.merchant;
             }
+            holder.merchant.setText(merchantText);
+            holder.date.setText(MoneyUtils.formatDate(receipt.dateMillis));
+            holder.amount.setText(MoneyUtils.format(receipt.amount));
 
-            h.merchant.setText(merchantText);
-
-            h.date.setText(MoneyUtils.formatDate(r.dateMillis));
-
-            h.amount.setText(MoneyUtils.format(r.amount));
-
-            String statusText;
-
-            if (r.matchGroupId == null) {
-                statusText = "unmatched";
+            final String statusText;
+            if (receipt.matchGroupId == null) {
+                statusText = STATUS_UNMATCHED;
             } else {
-                statusText = "matched";
+                statusText = STATUS_MATCHED;
             }
+            holder.status.setText(statusText);
+            holder.status.setBackgroundResource(R.drawable.bg_chip_money);
+            holder.status.setTextColor(getColor(R.color.on_warning_container));
 
-            h.status.setText(statusText);
-
-            h.status.setBackgroundResource(R.drawable.bg_chip_money);
-
-            h.status.setTextColor(getColor(R.color.on_warning_container));
-
-            h.itemView.setOnClickListener(v -> {
-                Intent i = new Intent(BudgetDetailActivity.this, EditReceiptActivity.class);
-
-                i.putExtra(EditReceiptActivity.EXTRA_RECEIPT_ID, r.id);
-
-                startActivity(i);
+            holder.itemView.setOnClickListener(clickedView -> {
+                final Intent editIntent = new Intent(BudgetDetailActivity.this, EditReceiptActivity.class);
+                editIntent.putExtra(EditReceiptActivity.EXTRA_RECEIPT_ID, receipt.id);
+                startActivity(editIntent);
             });
         }
 
-        @Override public int getItemCount() { return data.size(); }
 
-        class VH extends RecyclerView.ViewHolder {
-            final TextView merchant, date, status, amount;
+        @Override
+        public int getItemCount() {
+            return data.size();
+        }
 
-            VH(View v) {
-                super(v);
 
-                merchant = v.findViewById(R.id.tv_merchant);
+        class ReceiptViewHolder extends RecyclerView.ViewHolder {
+            final TextView merchant;
+            final TextView date;
+            final TextView status;
+            final TextView amount;
 
-                date = v.findViewById(R.id.tv_date);
-
-                status = v.findViewById(R.id.tv_status);
-
-                amount = v.findViewById(R.id.tv_amount);
+            ReceiptViewHolder(View itemView) {
+                super(itemView);
+                merchant = itemView.findViewById(R.id.tv_merchant);
+                date = itemView.findViewById(R.id.tv_date);
+                status = itemView.findViewById(R.id.tv_status);
+                amount = itemView.findViewById(R.id.tv_amount);
             }
         }
     }

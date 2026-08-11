@@ -1,18 +1,21 @@
 package com.example.receipttracker.data;
 
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-
 import androidx.room.Entity;
-
 import androidx.room.Index;
-
 import androidx.room.PrimaryKey;
 
 
 /**
  * A scanned receipt. All fields are nullable except id, amount and date because the OCR pass
  * is best-effort - we keep what we got and let the user fix the rest on the edit screen.
+ *
+ * <p>Immutable: every mutation goes through a {@code with*} method that returns a new
+ * instance with the requested field replaced. The {@code id} field is the only one we
+ * do not provide a {@code with*} for; it is the primary key and never changes once
+ * assigned by Room.</p>
  */
 @Entity(
         tableName = "receipts",
@@ -24,39 +27,39 @@ import androidx.room.PrimaryKey;
                 @Index(value = "deletedAt")
         }
 )
-public class Receipt {
+public final class Receipt {
 
     @PrimaryKey(autoGenerate = true)
-    public long id;
+    public final long id;
 
 
     @Nullable
-    public String merchant;
+    public final String merchant;
 
 
     /** Epoch millis at midnight local time of the receipt date. */
-    public long dateMillis;
+    public final long dateMillis;
 
 
     /** Receipt total in major units (e.g. dollars). Always positive. */
-    public double amount;
+    public final double amount;
 
 
     /** Absolute path to the JPEG of the original receipt, or null if not saved. */
     @Nullable
-    public String photoPath;
+    public final String photoPath;
 
 
     /** Raw OCR text so the user can sanity-check what was read. */
     @Nullable
-    public String rawText;
+    public final String rawText;
 
 
     @Nullable
-    public String notes;
+    public final String notes;
 
 
-    public long createdAt;
+    public final long createdAt;
 
 
     /**
@@ -64,7 +67,7 @@ public class Receipt {
      * BankTransaction row. Null means unmatched.
      */
     @Nullable
-    public String matchGroupId;
+    public final String matchGroupId;
 
 
     /**
@@ -73,7 +76,7 @@ public class Receipt {
      * means the receipt is not in any budget.
      */
     @Nullable
-    public Long budgetId;
+    public final Long budgetId;
 
 
     /**
@@ -83,5 +86,131 @@ public class Receipt {
      * recover.
      */
     @Nullable
-    public Long deletedAt;
+    public final Long deletedAt;
+
+
+    public Receipt(
+            final long id,
+            @Nullable final String merchant,
+            final long dateMillis,
+            final double amount,
+            @Nullable final String photoPath,
+            @Nullable final String rawText,
+            @Nullable final String notes,
+            final long createdAt,
+            @Nullable final String matchGroupId,
+            @Nullable final Long budgetId,
+            @Nullable final Long deletedAt) {
+        this.id = id;
+        this.merchant = merchant;
+        this.dateMillis = dateMillis;
+        this.amount = amount;
+        this.photoPath = photoPath;
+        this.rawText = rawText;
+        this.notes = notes;
+        this.createdAt = createdAt;
+        this.matchGroupId = matchGroupId;
+        this.budgetId = budgetId;
+        this.deletedAt = deletedAt;
+    }
+
+
+    public Receipt withMerchant(@Nullable final String newMerchant) {
+        if (newMerchant == null ? this.merchant == null : newMerchant.equals(this.merchant)) {
+            return this;
+        }
+        return new Receipt(id, newMerchant, dateMillis, amount, photoPath, rawText, notes,
+                createdAt, matchGroupId, budgetId, deletedAt);
+    }
+
+
+    public Receipt withDateMillis(final long newDateMillis) {
+        if (newDateMillis == this.dateMillis) {
+            return this;
+        }
+        return new Receipt(id, merchant, newDateMillis, amount, photoPath, rawText, notes,
+                createdAt, matchGroupId, budgetId, deletedAt);
+    }
+
+
+    public Receipt withAmount(final double newAmount) {
+        if (newAmount == this.amount) {
+            return this;
+        }
+        return new Receipt(id, merchant, dateMillis, newAmount, photoPath, rawText, notes,
+                createdAt, matchGroupId, budgetId, deletedAt);
+    }
+
+
+    public Receipt withPhotoPath(@Nullable final String newPhotoPath) {
+        if (newPhotoPath == null ? this.photoPath == null : newPhotoPath.equals(this.photoPath)) {
+            return this;
+        }
+        return new Receipt(id, merchant, dateMillis, amount, newPhotoPath, rawText, notes,
+                createdAt, matchGroupId, budgetId, deletedAt);
+    }
+
+
+    public Receipt withRawText(@Nullable final String newRawText) {
+        if (newRawText == null ? this.rawText == null : newRawText.equals(this.rawText)) {
+            return this;
+        }
+        return new Receipt(id, merchant, dateMillis, amount, photoPath, newRawText, notes,
+                createdAt, matchGroupId, budgetId, deletedAt);
+    }
+
+
+    public Receipt withNotes(@Nullable final String newNotes) {
+        if (newNotes == null ? this.notes == null : newNotes.equals(this.notes)) {
+            return this;
+        }
+        return new Receipt(id, merchant, dateMillis, amount, photoPath, rawText, newNotes,
+                createdAt, matchGroupId, budgetId, deletedAt);
+    }
+
+
+    public Receipt withCreatedAt(final long newCreatedAt) {
+        if (newCreatedAt == this.createdAt) {
+            return this;
+        }
+        return new Receipt(id, merchant, dateMillis, amount, photoPath, rawText, notes,
+                newCreatedAt, matchGroupId, budgetId, deletedAt);
+    }
+
+
+    public Receipt withMatchGroupId(@Nullable final String newMatchGroupId) {
+        if (newMatchGroupId == null ? this.matchGroupId == null
+                : newMatchGroupId.equals(this.matchGroupId)) {
+            return this;
+        }
+        return new Receipt(id, merchant, dateMillis, amount, photoPath, rawText, notes,
+                createdAt, newMatchGroupId, budgetId, deletedAt);
+    }
+
+
+    public Receipt withBudgetId(@Nullable final Long newBudgetId) {
+        if (newBudgetId == null ? this.budgetId == null : newBudgetId.equals(this.budgetId)) {
+            return this;
+        }
+        return new Receipt(id, merchant, dateMillis, amount, photoPath, rawText, notes,
+                createdAt, matchGroupId, newBudgetId, deletedAt);
+    }
+
+
+    public Receipt withDeletedAt(@Nullable final Long newDeletedAt) {
+        if (newDeletedAt == null ? this.deletedAt == null : newDeletedAt.equals(this.deletedAt)) {
+            return this;
+        }
+        return new Receipt(id, merchant, dateMillis, amount, photoPath, rawText, notes,
+                createdAt, matchGroupId, budgetId, newDeletedAt);
+    }
+
+
+    @NonNull
+    @Override
+    public String toString() {
+        return "Receipt{id=" + id + ", merchant='" + merchant + "', amount=" + amount
+                + ", dateMillis=" + dateMillis + ", budgetId=" + budgetId
+                + ", deletedAt=" + deletedAt + "}";
+    }
 }

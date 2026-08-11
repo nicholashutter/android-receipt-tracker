@@ -7,27 +7,14 @@ import android.util.Log;
 
 
 import java.io.File;
-
 import java.io.FileWriter;
-
 import java.io.IOException;
-
 import java.io.PrintWriter;
-
 import java.io.StringWriter;
-
 import java.text.SimpleDateFormat;
-
 import java.util.ArrayDeque;
-
-import java.util.ArrayList;
-
 import java.util.Date;
-
 import java.util.Deque;
-
-import java.util.List;
-
 import java.util.Locale;
 
 
@@ -36,95 +23,86 @@ import java.util.Locale;
  * the app's private filesDir. Survives crashes because the on-disk writer
  * is opened in append mode and fsync'd on every write.
  *
- * Also keeps a small in-memory ring buffer of the last N events so a
+ * <p>Also keeps a small in-memory ring buffer of the last N events so a
  * "View logs" screen can show recent activity without having to read the
  * whole file, and so the last events are available even if the disk write
- * was somehow lost.
+ * was somehow lost.</p>
  *
- * Wire the uncaught-exception handler in {@link #installCrashHandler()}.
+ * <p>Wire the uncaught-exception handler in {@link #installCrashHandler()}.</p>
  */
 public final class Logger {
 
     public static final String TAG = "RT";
 
-
     private static final String LOG_DIR = "logs";
-
     private static final String LOG_FILE = "app.log";
-
+    private static final String ROLLED_FILE = "app.log.1";
     private static final long MAX_FILE_BYTES = 5L * 1024 * 1024;  // 5 MB
-
     private static final int RING_SIZE = 500;
+    private static final String LOG_FILE_PATH_PLACEHOLDER = "?";
 
-
-    private static final SimpleDateFormat TS_FMT =
+    private static final SimpleDateFormat TIMESTAMP_FORMAT =
             new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
-
 
     private static final Object LOCK = new Object();
 
-
     private static File logFile;
-
     private static boolean initialised;
-
     private static final Deque<String> RING = new ArrayDeque<>(RING_SIZE);
 
+    private static Thread.UncaughtExceptionHandler previousCrashHandler;
 
     private Logger() {}
 
 
-    public static void init(Context ctx) {
+    public static void init(Context appContext) {
         if (initialised) return;
-
         synchronized (LOCK) {
             if (initialised) return;
 
-            File dir = new File(ctx.getFilesDir(), LOG_DIR);
+            final File logDirectory = new File(appContext.getFilesDir(), LOG_DIR);
+            final boolean directoryReady = logDirectory.mkdirs();
+            if (!directoryReady && !logDirectory.isDirectory()) {
+                Logger.w(TAG, "Could not create log directory: " + logDirectory);
+            }
 
-            //noinspection ResultOfMethodCallIgnored
-            dir.mkdirs();
-
-            logFile = new File(dir, LOG_FILE);
-
-            // Touch the file so it exists for tail/share.
-            try { if (!logFile.exists()) //noinspection ResultOfMethodCallIgnored
-                logFile.createNewFile(); } catch (IOException ignored) { }
+            logFile = new File(logDirectory, LOG_FILE);
+            try {
+                if (!logFile.exists()) {
+                    final boolean created = logFile.createNewFile();
+                    if (!created) {
+                        Logger.w(TAG, "Log file already exists or could not be created: " + logFile);
+                    }
+                }
+            } catch (IOException ioException) {
+                Logger.w(TAG, "Failed to touch log file", ioException);
+            }
 
             initialised = true;
         }
-
         installCrashHandler();
 
-        String logFilePath;
-
+        final String resolvedFilePath;
         if (logFile == null) {
-            logFilePath = "?";
+            resolvedFilePath = LOG_FILE_PATH_PLACEHOLDER;
         } else {
-            logFilePath = logFile.getAbsolutePath();
+            resolvedFilePath = logFile.getAbsolutePath();
         }
-
-        i(TAG, "Logger initialised; file=" + logFilePath);
+        i(TAG, "Logger initialised; file=" + resolvedFilePath);
     }
 
 
-    private static Thread.UncaughtExceptionHandler previousCrashHandler;
-
     public static void installCrashHandler() {
         if (previousCrashHandler != null) return;
-
         previousCrashHandler = Thread.getDefaultUncaughtExceptionHandler();
-
-        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+        Thread.setDefaultUncaughtExceptionHandler((crashingThread, throwable) -> {
             try {
-                e(TAG, "Uncaught exception on thread '" + t.getName() + "'", e);
-
-                flushSync();
-            } catch (Throwable ignored) { }
-
-            // Chain to whatever was there before (system, crashlytics, etc.)
+                e(TAG, "Uncaught exception on thread '" + crashingThread.getName() + "'", throwable);
+            } catch (Throwable ignored) {
+                // Never let the crash handler itself throw.
+            }
             if (previousCrashHandler != null) {
-                previousCrashHandler.uncaughtException(t, e);
+                previousCrashHandler.uncaughtException(crashingThread, throwable);
             } else {
                 System.exit(2);
             }
@@ -135,16 +113,11 @@ public final class Logger {
     // ---------- public API ----------
 
     public static void d(String tag, String msg) { log(Level.D, tag, msg, null); }
-
     public static void i(String tag, String msg) { log(Level.I, tag, msg, null); }
-
     public static void w(String tag, String msg) { log(Level.W, tag, msg, null); }
-
-    public static void w(String tag, String msg, Throwable t) { log(Level.W, tag, msg, t); }
-
+    public static void w(String tag, String msg, Throwable throwable) { log(Level.W, tag, msg, throwable); }
     public static void e(String tag, String msg) { log(Level.E, tag, msg, null); }
-
-    public static void e(String tag, String msg, Throwable t) { log(Level.E, tag, msg, t); }
+    public static void e(String tag, String msg, Throwable throwable) { log(Level.E, tag, msg, throwable); }
 
 
     /** A divider line — handy for separating "user actions" in the log viewer. */
@@ -158,44 +131,20 @@ public final class Logger {
     }
 
 
-    public static int ringSize() {
-        synchronized (LOCK) { return RING.size(); }
-    }
-
-
-    /** Returns the last `lines` lines from the in-memory ring (newest last). */
-    public static List<String> recent(int lines) {
-        synchronized (LOCK) {
-            List<String> all = new ArrayList<>(RING);
-
-            int from = Math.max(0, all.size() - lines);
-
-            return new ArrayList<>(all.subList(from, all.size()));
-        }
-    }
-
-
     /** Returns the full log file as a String (synchronous, may be large). */
     public static String readAll() throws IOException {
         if (logFile == null) return "";
-
         synchronized (LOCK) {
-            java.io.FileInputStream in = new java.io.FileInputStream(logFile);
-
-            byte[] buf = new byte[(int) logFile.length()];
-
-            int read = 0;
-            while (read < buf.length) {
-                int n = in.read(buf, read, buf.length - read);
-
-                if (n < 0) break;
-
-                read += n;
+            final java.io.FileInputStream input = new java.io.FileInputStream(logFile);
+            final byte[] buffer = new byte[(int) logFile.length()];
+            int totalRead = 0;
+            while (totalRead < buffer.length) {
+                final int bytesRead = input.read(buffer, totalRead, buffer.length - totalRead);
+                if (bytesRead < 0) break;
+                totalRead += bytesRead;
             }
-
-            in.close();
-
-            return new String(buf, 0, read, "UTF-8");
+            input.close();
+            return new String(buffer, 0, totalRead, "UTF-8");
         }
     }
 
@@ -203,29 +152,20 @@ public final class Logger {
     public static void clear() {
         synchronized (LOCK) {
             RING.clear();
-
             if (logFile != null && logFile.exists()) {
-                //noinspection ResultOfMethodCallIgnored
-                logFile.delete();
-
+                final boolean deleted = logFile.delete();
+                if (!deleted) {
+                    Logger.w(TAG, "Failed to delete log file before clear: " + logFile);
+                }
                 try {
-                    //noinspection ResultOfMethodCallIgnored
-                    logFile.createNewFile();
-                } catch (IOException ignored) { }
+                    final boolean recreated = logFile.createNewFile();
+                    if (!recreated) {
+                        Logger.w(TAG, "Could not recreate log file after clear: " + logFile);
+                    }
+                } catch (IOException ioException) {
+                    Logger.w(TAG, "Failed to recreate log file after clear", ioException);
+                }
             }
-        }
-    }
-
-
-    /** Force a fsync — call this from critical error paths to ensure the
-     *  last N events are durable before the process dies. */
-    public static void flushSync() {
-        synchronized (LOCK) {
-            // FileOutputStream.flush() does not fsync; we open a fresh handle
-            // to a no-op sibling and use getFD().sync() via reflection-free
-            // approach: just close the current writer. We don't keep a
-            // long-lived writer — every line is opened/closed under the lock,
-            // so there is nothing to flush.
         }
     }
 
@@ -235,88 +175,76 @@ public final class Logger {
     private enum Level { D, I, W, E }
 
 
-    private static void log(Level level, String tag, String msg, Throwable t) {
+    private static void log(Level level, String tag, String msg, Throwable throwable) {
         if (!initialised) {
             // Best-effort fallback to logcat only if init() never ran.
-            fallback(level, tag, msg, t);
-
+            fallback(level, tag, msg, throwable);
             return;
         }
-
-        String time = TS_FMT.format(new Date());
-
-        String line;
-
-        if (t == null) {
-            line = String.format(Locale.US, "%s  %s/%s  %s", time, level.name(), tag, msg);
+        final String timestamp = TIMESTAMP_FORMAT.format(new Date());
+        final String line;
+        if (throwable == null) {
+            line = String.format(Locale.US, "%s  %s/%s  %s", timestamp, level.name(), tag, msg);
         } else {
-            line = String.format(Locale.US, "%s  %s/%s  %s%n%s", time, level.name(), tag, msg,
-                    stackTraceToString(t));
+            line = String.format(Locale.US, "%s  %s/%s  %s%n%s",
+                    timestamp, level.name(), tag, msg, stackTraceToString(throwable));
         }
-
         synchronized (LOCK) {
-            // Logcat
-            switch (level) {
-                case D: Log.d(tag, msg); break;
-                case I: Log.i(tag, msg); break;
-                case W: Log.w(tag, msg, t); break;
-                case E: Log.e(tag, msg, t); break;
-            }
-
-            // File
+            writeToLogcat(level, tag, msg, throwable);
             appendLine(line);
-
-            // Ring buffer
             RING.addLast(line);
             while (RING.size() > RING_SIZE) RING.pollFirst();
         }
     }
 
 
-    private static void fallback(Level level, String tag, String msg, Throwable t) {
+    private static void writeToLogcat(Level level, String tag, String msg, Throwable throwable) {
         switch (level) {
             case D: Log.d(tag, msg); break;
             case I: Log.i(tag, msg); break;
-            case W: Log.w(tag, msg, t); break;
-            case E: Log.e(tag, msg, t); break;
+            case W: Log.w(tag, msg, throwable); break;
+            case E: Log.e(tag, msg, throwable); break;
         }
+    }
+
+
+    private static void fallback(Level level, String tag, String msg, Throwable throwable) {
+        writeToLogcat(level, tag, msg, throwable);
     }
 
 
     private static void appendLine(String line) {
         if (logFile == null) return;
-
         try {
-            // Rotate if too big
-            if (logFile.length() > MAX_FILE_BYTES) {
-                File old = new File(logFile.getParentFile(), "app.log.1");
-
-                //noinspection ResultOfMethodCallIgnored
-                old.delete();
-
-                //noinspection ResultOfMethodCallIgnored
-                logFile.renameTo(old);
-
-                //noinspection ResultOfMethodCallIgnored
-                logFile.createNewFile();
+            rotateIfNeeded();
+            try (FileWriter writer = new FileWriter(logFile, true)) {
+                writer.write(line);
+                writer.write("\n");
             }
-
-            try (FileWriter w = new FileWriter(logFile, true)) {
-                w.write(line);
-
-                w.write("\n");
-            }
-        } catch (IOException e) {
-            Log.e(TAG, "log write failed", e);
+        } catch (IOException ioException) {
+            Log.e(TAG, "log write failed", ioException);
         }
     }
 
 
-    private static String stackTraceToString(Throwable t) {
-        StringWriter sw = new StringWriter();
+    private static void rotateIfNeeded() throws IOException {
+        if (logFile.length() <= MAX_FILE_BYTES) return;
+        final File rolledFile = new File(logFile.getParentFile(), ROLLED_FILE);
+        rolledFile.delete();
+        final boolean renamed = logFile.renameTo(rolledFile);
+        if (!renamed) {
+            Log.w(TAG, "Failed to rotate log file to " + rolledFile);
+        }
+        final boolean recreated = logFile.createNewFile();
+        if (!recreated) {
+            Log.w(TAG, "Failed to recreate log file after rotation: " + logFile);
+        }
+    }
 
-        t.printStackTrace(new PrintWriter(sw));
 
-        return sw.toString();
+    private static String stackTraceToString(final Throwable throwable) {
+        final StringWriter stringWriter = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(stringWriter));
+        return stringWriter.toString();
     }
 }

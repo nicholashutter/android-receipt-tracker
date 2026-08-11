@@ -13,9 +13,13 @@ import java.util.ArrayList;
 
 import java.util.Collections;
 
+import java.util.HashMap;
+
 import java.util.List;
 
 import java.util.Locale;
+
+import java.util.Map;
 
 
 /**
@@ -23,18 +27,18 @@ import java.util.Locale;
  * entered-vs-circled cross-check and a sub+tax+tip sanity check.
  *
  * <p>Stage 1 ({@link PriceClassifier}): every detected number is
- * classified as "is this a price?" Dates, phone numbers, auth codes,
- * transaction IDs, and quantities are dropped.</p>
+ * classified as "is this a price?" Dates, phone numbers, auth
+ * codes, transaction IDs, and quantities are dropped.</p>
  *
- * <p>Stage 2 ({@link LinearLearner}): each remaining price is scored
- * for "is this the total?" — and the highest-probability alternative
- * is reported so the UI can show the user what the model would have
- * picked.</p>
+ * <p>Stage 2 ({@link LinearLearner}): each remaining price is
+ * scored for "is this the total?" — and the highest-probability
+ * alternative is reported so the UI can show the user what the
+ * model would have picked.</p>
  *
  * <p>Cross-check: if the user typed an amount in the amount field,
  * we re-run stage 1 + stage 2 on the entered value too, and compare
- * it against the marked one. Agreement boosts confidence; disagreement
- * triggers a sanity check.</p>
+ * it against the marked one. Agreement boosts confidence;
+ * disagreement triggers a sanity check.</p>
  *
  * <p>Sanity check: if the receipt has labeled components (subtotal,
  * tax, tip), the predicted total is their sum. The candidate (and
@@ -47,16 +51,71 @@ import java.util.Locale;
  */
 public final class TotalVerifier {
 
+    private static final String LOG_TAG = "Verifier";
+    private static final String PRICE_LOG_TAG = "PriceClf";
+    private static final String LEARNER_LOG_TAG = "TotalLearner";
+
+    private static final double TOL_STRICT = 0.10;
+    private static final double TOL_TIGHT = 0.50;
+    private static final double TOL_LOOSE = 1.00;
+    private static final double PRICE_DELTA_TOLERANCE = 0.005;
+    private static final double SUBTOTAL_FLOOR = 0.01;
+    private static final double LINE_ITEM_MIN = 0.10;
+    private static final int MIN_LINE_ITEMS_FOR_SUM = 2;
+
+    private static final double CONF_NO_COMPONENTS = 0.40;
+    private static final double CONF_DELTA_STRICT = 0.97;
+    private static final double CONF_DELTA_TIGHT = 0.88;
+    private static final double CONF_DELTA_LOOSE = 0.70;
+    private static final double CONF_DELTA_RATIO = 0.55;
+    private static final double CONF_DELTA_FLOOR = 0.30;
+    private static final double DELTA_RATIO_THRESHOLD = 0.10;
+
+    private static final double ALT_PRESSURE_MARGIN = 0.10;
+    private static final double HIGH_CONFIDENCE_BUMP = 0.05;
+    private static final double HIGH_CONFIDENCE_THRESHOLD = 0.85;
+    private static final double DELTA_TIGHT_BUMP_THRESHOLD = 0.70;
+    private static final double LOW_PRICE_PROB_THRESHOLD = 0.5;
+    private static final double LOW_PRICE_PROB_PENALTY = 0.30;
+    private static final double BELOW_SUBTOTAL_PENALTY = 0.20;
+    private static final double BELOW_SUBTOTAL_FLOOR = 0.10;
+    private static final double DISAGREE_PENALTY_BASE = 0.10;
+    private static final double DISAGREE_PENALTY_SCALE = 0.10;
+    private static final double MATCH_BOOST = 0.05;
+    private static final double COMBINED_FLOOR = 0.0;
+    private static final double COMBINED_MAX = 0.99;
+    private static final double ENSEMBLE_MAX = 0.99;
+
+    private static final double ENSEMBLE_WEIGHT_MAX_CONF = 0.55;
+    private static final double ENSEMBLE_WEIGHT_AVG_CONF = 0.30;
+    private static final double ENSEMBLE_WEIGHT_VOTE_SHARE = 0.15;
+    private static final double ENSEMBLE_ADJUSTED_THRESHOLD = 0.10;
+    private static final double CENTS_SCALE = 100.0;
+
+    private static final String KEEPER_LABEL = "[PRICE]";
+    private static final String DROP_LABEL = "[drop]";
+    private static final String SYNTHETIC_LINE_TEXT = "(synthetic)";
+    private static final String USER_TYPED_LINE_TEXT = "(user-typed)";
+    private static final String NO_ENTERED_LABEL = "(none)";
+
+    private static final String SRC_CIRCLED = "circled";
+    private static final String SRC_ENTERED_SANITY = "entered (sanity wins)";
+    private static final String SRC_CIRCLED_SANITY = "circled (sanity wins)";
+    private static final String SRC_ENTERED_MODEL_SANITY = "entered (model + sanity)";
+    private static final String SRC_CIRCLED_MODEL_SANITY = "circled (model + sanity)";
+    private static final String SRC_MODEL_BEST_NO_MATCH = "model-best (neither matches sub+tax)";
+    private static final String SRC_ENTERED_MODEL_PREFERS = "entered (model prefers it)";
+    private static final String SRC_MODEL_BEST_NO_COMPONENTS = "model-best (no components)";
+
+
     private TotalVerifier() {}
 
 
-    public static class Result {
+    public static final class Result {
+
         public final double total;
-
         public final double confidence;
-
         public final String reasoning;
-
         public final boolean wasAdjusted;
 
         /** P(this number is a price) — from the stage 1 classifier. */
@@ -104,10 +163,11 @@ public final class TotalVerifier {
         public final int ensembleSize;
 
         /**
-         * Consensus confidence derived from the ensemble. We take the
-         * weighted average of the per-run confidences for the winning
-         * total, where the weight is the run's own P(isTotal). A run
-         * that was very sure of itself counts more than a fence-sitter.
+         * Consensus confidence derived from the ensemble. We take
+         * the weighted average of the per-run confidences for the
+         * winning total, where the weight is the run's own
+         * P(isTotal). A run that was very sure of itself counts more
+         * than a fence-sitter.
          */
         public final double ensembleConfidence;
 
@@ -140,57 +200,27 @@ public final class TotalVerifier {
                       int ensembleVotesForWinner, int ensembleSize,
                       double ensembleConfidence, String ensembleSummary) {
             this.total = total;
-
             this.confidence = confidence;
-
             this.reasoning = reasoning;
-
             this.wasAdjusted = wasAdjusted;
-
             this.priceProbability = priceProbability;
-
             this.candidateProbability = candidateProbability;
-
             this.bestAlternativeProbability = bestAlternativeProbability;
-
             this.modelChoice = modelChoice;
-
             this.enteredAmount = enteredAmount;
-
             this.enteredPriceProbability = enteredPriceProbability;
-
             this.enteredProbability = enteredProbability;
-
             this.enteredMatchesMarked = enteredMatchesMarked;
-
             this.sanityCheck = sanityCheck;
-
             this.recommendedTotal = recommendedTotal;
-
             this.recommendedSource = recommendedSource;
-
             this.sanityDelta = sanityDelta;
-
             this.ensembleVotesForWinner = ensembleVotesForWinner;
-
             this.ensembleSize = ensembleSize;
-
             this.ensembleConfidence = ensembleConfidence;
-
-            if (ensembleSummary == null) {
-                this.ensembleSummary = "";
-            } else {
-                this.ensembleSummary = ensembleSummary;
-            }
+            this.ensembleSummary = (ensembleSummary == null) ? "" : ensembleSummary;
         }
     }
-
-
-    private static final double TOL_STRICT = 0.10;
-
-    private static final double TOL_TIGHT  = 0.50;
-
-    private static final double TOL_LOOSE  = 1.00;
 
 
     /** Overload for callers that don't have an entered amount. */
@@ -200,531 +230,841 @@ public final class TotalVerifier {
 
 
     /**
-     * Verifies a circled/marked candidate AND, if {@code enteredAmount} is
-     * a real number, the user-typed amount. Cross-checks the two and
-     * runs a sanity check against the heuristic sub+tax+tip prediction.
-     *
-     * @param candidate     the number the user circled/marked
-     * @param allNumbers    every number the parser detected on the receipt
-     * @param enteredAmount the number the user typed in the amount field, or NaN
+     * Verifies a circled/marked candidate AND, if {@code enteredAmount}
+     * is a real number, the user-typed amount. Cross-checks the two
+     * and runs a sanity check against the heuristic sub+tax+tip
+     * prediction.
      */
     public static Result verify(double candidate, List<DetectedNumber> allNumbers,
                                  double enteredAmount) {
         Logger.section("TOTAL VERIFY");
+        logVerifyHeader(candidate, enteredAmount, allNumbers);
 
-        String enteredLabel;
-
-        if (Double.isNaN(enteredAmount)) {
-            enteredLabel = "(none)";
-        } else {
-            enteredLabel = fmt(enteredAmount);
-        }
-
-        int allNumbersCount;
-
-        if (allNumbers == null) {
-            allNumbersCount = 0;
-        } else {
-            allNumbersCount = allNumbers.size();
-        }
-
-        Logger.i("Verifier", "candidate(circled)=" + candidate
-                + "  entered=" + enteredLabel
-                + "  (all numbers: " + allNumbersCount + ")");
-
-
-        // ============ STAGE 1: PriceClassifier ============
+        // === STAGE 1: PriceClassifier ===
         Logger.section("STAGE 1: PRICE CLASSIFIER");
+        // Touch the trained model so its weights are loaded even if
+        // every other number is filtered out.
+        PriceClassifier.getWeights();
+        PriceClassifier.getBias();
 
-        PriceClassifier.getWeights(); PriceClassifier.getBias();
+        final Stage1Result stage1 = runStage1(candidate, allNumbers);
+        final DetectedNumber candidateRecord = stage1.candidateRecord;
+        final List<DetectedNumber> prices = stage1.prices;
+        final double candPriceProb = stage1.candidatePriceProbability;
 
-
-        DetectedNumber candidateRecord = findLineWithValue(allNumbers, candidate);
-
-        if (candidateRecord == null) {
-            candidateRecord = new DetectedNumber(candidate, "(synthetic)", 0, null);
-        }
-
-
-        List<DetectedNumber> prices = new ArrayList<>();
-
-        for (DetectedNumber n : allNumbers) {
-            double[] f = PriceClassifier.extractFeatures(n);
-
-            double p = PriceClassifier.predictProbability(f);
-
-            boolean keep = p >= PriceClassifier.PRICE_THRESHOLD;
-
-            String keepLabel;
-
-            if (keep) {
-                keepLabel = "[PRICE]";
-            } else {
-                keepLabel = "[drop]";
-            }
-
-            Logger.i("PriceClf", String.format(Locale.US,
-                    "  $%.2f (line %d, kw=%s)  P(isPrice)=%.3f  %s",
-                    n.value, n.lineIndex, n.keyword, p, keepLabel));
-
-            if (keep) prices.add(n);
-        }
-
-        Logger.i("PriceClf", "kept " + prices.size() + " of " + allNumbers.size() + " numbers as prices");
-
-
-        double candPriceProb = PriceClassifier.predictProbability(
-                PriceClassifier.extractFeatures(candidateRecord));
-
-        Logger.i("PriceClf", String.format(Locale.US,
-                "candidate(circled) $%.2f  P(isPrice)=%.3f", candidate, candPriceProb));
-
-
-        // ============ Pass 1: delta heuristic on the price subset ============
+        // === HEURISTIC ON PRICES ===
         Logger.section("HEURISTIC ON PRICES");
+        final HeuristicResult heuristic = runHeuristic(candidate, prices);
+        final Double subtotal = heuristic.subtotal;
+        final Double tax = heuristic.tax;
+        final Double tip = heuristic.tip;
+        final List<DetectedNumber> others = heuristic.others;
+        final ComponentSum components = heuristic.components;
+        final double predicted = components.predictedTotal;
+        final int componentCount = components.componentCount;
+        final double sanityDelta = components.sanityDelta;
 
-        List<DetectedNumber> others = new ArrayList<>();
-
-        for (DetectedNumber n : prices) {
-            if (Math.abs(n.value - candidate) < 0.005) continue;
-
-            others.add(n);
-        }
-
-        Collections.sort(others, (a, b) -> Double.compare(a.value, b.value));
-
-
-        Double subtotal = pickOne(others, "subtotal");
-
-        Double tax      = pickOne(others, "tax");
-
-        Double tip      = pickOne(others, "tip");
-
-        Logger.i("Verifier", "components: subtotal=" + subtotal
-                + "  tax=" + tax + "  tip=" + tip);
-
-
-        double predicted = 0;
-
-        int componentCount = 0;
-
-        StringBuilder predExpr = new StringBuilder();
-
-        if (subtotal != null) { predicted += subtotal; componentCount++;
-
-            predExpr.append("subtotal(").append(fmt(subtotal)).append(")"); }
-
-        if (tax != null) { predicted += tax; componentCount++;
-
-            if (predExpr.length() > 0) predExpr.append(" + ");
-
-            predExpr.append("tax(").append(fmt(tax)).append(")"); }
-
-        if (tip != null) { predicted += tip; componentCount++;
-
-            if (predExpr.length() > 0) predExpr.append(" + ");
-
-            predExpr.append("tip(").append(fmt(tip)).append(")"); }
-
-        if (componentCount == 0) {
-            double lineItemSum = 0;
-
-            int itemCount = 0;
-
-            for (DetectedNumber n : others) {
-                if (n.value < candidate && n.value > 0.10) {
-                    lineItemSum += n.value;
-
-                    itemCount++;
-                }
-            }
-
-            if (itemCount >= 2) {
-                predicted = lineItemSum;
-
-                componentCount = 1;
-
-                predExpr.setLength(0);
-
-                predExpr.append("lineItemsSum(").append(fmt(lineItemSum)).append(")");
-            }
-        }
-
-        Logger.i("Verifier", "predicted(sub+tax+tip)=" + fmt(predicted) + "  expr=" + predExpr);
-
-
-        // ============ STAGE 2: LinearLearner on the price subset ============
+        // === STAGE 2: LinearLearner ===
         Logger.section("STAGE 2: LINEAR LEARNER (on prices only)");
+        LinearLearner.getWeights();
+        LinearLearner.getBias();
 
-        LinearLearner.getWeights(); LinearLearner.getBias();
+        final int totalLines = maxLineIndex(allNumbers) + 1;
+        final Stage2Result stage2 = runStage2(candidateRecord, others, prices,
+                subtotal, tax, tip, totalLines);
+        final double candProb = stage2.candidateProbability;
+        final BestAlternative bestAlt = stage2.bestAlternative;
 
+        // === ENTERED: same stage 1 + stage 2 against the user-typed value ===
+        final boolean haveEntered = !Double.isNaN(enteredAmount) && enteredAmount > 0;
+        final EnteredResult enteredResult = runEnteredIfPresent(haveEntered, enteredAmount,
+                allNumbers, prices, subtotal, tax, tip, totalLines);
+        final double enteredProb = enteredResult.enteredProbability;
+        final double enteredPriceProb = enteredResult.enteredPriceProbability;
 
-        int totalLines = maxLineIndex(allNumbers) + 1;
-
-        double[] candFeatures = LinearLearner.extractFeatures(
-                candidateRecord, prices, subtotal, tax, tip, totalLines);
-
-        double candLogit = LinearLearner.predictLogit(candFeatures);
-
-        double candProb  = LinearLearner.predictProbability(candFeatures);
-
-        Logger.i("TotalLearner", "candidate(circled)=" + fmt(candidate)
-                + "  logit=" + String.format(Locale.US, "%+.3f", candLogit)
-                + "  P=" + String.format(Locale.US, "%.3f", candProb));
-
-
-        double bestAltProb = 0;
-
-        double bestAltVal  = candidate;
-
-        DetectedNumber bestAltRecord = null;
-
-        for (DetectedNumber n : others) {
-            double[] f = LinearLearner.extractFeatures(n, prices, subtotal, tax, tip, totalLines);
-
-            double p = LinearLearner.predictProbability(f);
-
-            Logger.i("TotalLearner", String.format(Locale.US,
-                    "  price=$%.2f (line %d, kw=%s)  P(isTotal)=%.3f",
-                    n.value, n.lineIndex, n.keyword, p));
-
-            if (p > bestAltProb) {
-                bestAltProb = p;
-
-                bestAltVal  = n.value;
-
-                bestAltRecord = n;
-            }
-        }
-
-        Logger.i("TotalLearner", String.format(Locale.US,
-                "best alternative: $%.2f  P=%.3f", bestAltVal, bestAltProb));
-
-
-        // ============ ENTERED: same stage 1 + stage 2 against the user-typed value ============
-        double enteredPriceProb = Double.NaN;
-
-        double enteredProb      = Double.NaN;
-
-        boolean haveEntered = !Double.isNaN(enteredAmount) && enteredAmount > 0;
-
-        if (haveEntered) {
-            DetectedNumber enteredRecord = findLineWithValue(allNumbers, enteredAmount);
-
-            if (enteredRecord == null) {
-                enteredRecord = new DetectedNumber(enteredAmount, "(user-typed)", 0, null);
-            }
-
-            enteredPriceProb = PriceClassifier.predictProbability(
-                    PriceClassifier.extractFeatures(enteredRecord));
-
-            Logger.i("PriceClf", String.format(Locale.US,
-                    "candidate(entered) $%.2f  P(isPrice)=%.3f", enteredAmount, enteredPriceProb));
-
-            double[] enteredFeatures = LinearLearner.extractFeatures(
-                    enteredRecord, prices, subtotal, tax, tip, totalLines);
-
-            enteredProb = LinearLearner.predictProbability(enteredFeatures);
-
-            Logger.i("TotalLearner", String.format(Locale.US,
-                    "candidate(entered) $%.2f  P(isTotal)=%.3f", enteredAmount, enteredProb));
-        }
-
-
-        // ============ Cross-check: entered vs circled ============
-        boolean enteredMatchesMarked = haveEntered
+        // === Cross-check: entered vs circled ===
+        final boolean enteredMatchesMarked = haveEntered
                 && Math.abs(enteredAmount - candidate) <= TOL_STRICT;
+        logCrossCheck(haveEntered, enteredAmount, candidate, enteredMatchesMarked);
 
-        String enteredDisplay;
-
-        if (haveEntered) {
-            enteredDisplay = fmt(enteredAmount);
-        } else {
-            enteredDisplay = "(none)";
+        // === Sanity check: both vs sub+tax+tip AND vs items sum ===
+        final LineItemSum lineItemSum = summarizeLineItems(others, subtotal, tax, tip);
+        final double itemSumDelta = Math.abs(lineItemSum.sum - candidate);
+        final SanityCheck sanityCheck = buildSanityCheck(haveEntered, enteredAmount,
+                componentCount, candidate, predicted, sanityDelta,
+                lineItemSum.sum, lineItemSum.count, itemSumDelta);
+        Logger.i(LOG_TAG, "sanity: " + sanityCheck.text);
+        if (lineItemSum.count >= 2) {
+            Logger.i(LOG_TAG, String.format(Locale.US,
+                    "items: sum=$%.2f  (n=%d, delta=$%.2f)",
+                    lineItemSum.sum, lineItemSum.count, itemSumDelta));
         }
 
-        Logger.i("Verifier", String.format(Locale.US,
-                "cross-check: entered=%s  circled=%s  match=%s",
-                enteredDisplay,
-                fmt(candidate),
-                enteredMatchesMarked));
-
-
-        // ============ Sanity check: both vs sub+tax+tip ============
-        String sanityCheck;
-
-        double sanityDelta;
-
-        if (componentCount == 0) {
-            sanityCheck = "no subtotal/tax/tip labels — sanity check skipped";
-
-            sanityDelta = Double.NaN;
-        } else {
-            sanityCheck = String.format(Locale.US,
-                    "sub+tax+tip=%s  (circled delta=$%.2f",
-                    fmt(predicted), Math.abs(candidate - predicted));
-
-            if (haveEntered) {
-                sanityCheck += String.format(Locale.US,
-                        ", entered delta=$%.2f", Math.abs(enteredAmount - predicted));
-            }
-
-            sanityCheck += ")";
-
-            sanityDelta = Math.abs(candidate - predicted);
-        }
-
-        Logger.i("Verifier", "sanity: " + sanityCheck);
-
-
-        // ============ Combine (circled) ============
-        double delta = Math.abs(candidate - predicted);
-
-        double deltaConfidence;
-
-        if (componentCount == 0) {
-            deltaConfidence = 0.40;
-        } else if (delta <= TOL_STRICT)       deltaConfidence = 0.97;
-        else if (delta <= TOL_TIGHT)          deltaConfidence = 0.88;
-        else if (delta <= TOL_LOOSE)          deltaConfidence = 0.70;
-        else if (predicted > 0 && delta <= predicted * 0.10) deltaConfidence = 0.55;
-        else                                  deltaConfidence = 0.30;
-
-
-        double combined = (deltaConfidence + candProb) / 2.0;
-
-        double altPressure = Math.max(0.0, bestAltProb - candProb - 0.10);
-
-        combined = Math.max(0.0, Math.min(0.99, combined - altPressure));
-
-        if (candProb >= 0.85 && bestAltProb <= candProb) combined = Math.min(0.99, combined + 0.05);
-
-        if (subtotal != null && candidate < subtotal - 0.01) combined = Math.max(0.10, combined - 0.20);
-
-        if (delta <= TOL_LOOSE && candProb >= 0.70) combined = Math.min(0.99, combined + 0.05);
-
-        if (candPriceProb < 0.5) combined = Math.max(0.05, combined - 0.30);
-
-
-        // Cross-check nudge: if entered disagrees with circled, bump the discrepancy
-        // into the combined score.
-        if (haveEntered && !enteredMatchesMarked) {
-            double disagreeDelta = Math.abs(enteredProb - candProb);
-
-            combined = Math.max(0.0, combined - 0.10 - 0.10 * disagreeDelta);
-        }
-
-        if (enteredMatchesMarked) {
-            combined = Math.min(0.99, combined + 0.05);
-        }
-
-
-        // ============ Decide what to recommend (3-way majority) ============
-        String recommendedSource;
-
-        double recommendedTotal;
-
-        boolean adjusted;
-
-
-        recommendedSource = "circled";
-
-        recommendedTotal  = candidate;
-
-        adjusted = false;
-
-
-        if (haveEntered && !enteredMatchesMarked) {
-            // Sanity check is the tie-breaker.
-            double circledSanityDelta = Math.abs(candidate - predicted);
-
-            double enteredSanityDelta = Math.abs(enteredAmount - predicted);
-
-            boolean sanityHelpsCircled = (circledSanityDelta <= enteredSanityDelta)
-                    && (circledSanityDelta <= TOL_LOOSE);
-
-            boolean sanityHelpsEntered = (enteredSanityDelta <= circledSanityDelta)
-                    && (enteredSanityDelta <= TOL_LOOSE);
-
-
-            if (sanityHelpsCircled && !sanityHelpsEntered) {
-                recommendedSource = "circled (sanity wins)";
-
-                recommendedTotal  = candidate;
-            } else if (sanityHelpsEntered && !sanityHelpsCircled) {
-                recommendedSource = "entered (sanity wins)";
-
-                recommendedTotal  = enteredAmount;
-
-                adjusted = true;
-            } else if (sanityHelpsCircled && sanityHelpsEntered) {
-                if (enteredProb > candProb + 0.10) {
-                    recommendedSource = "entered (model + sanity)";
-
-                    recommendedTotal  = enteredAmount;
-
-                    adjusted = true;
-                } else {
-                    recommendedSource = "circled (model + sanity)";
-
-                    recommendedTotal  = candidate;
-                }
-            } else {
-                if (bestAltRecord != null && bestAltProb > Math.max(candProb, enteredProb)) {
-                    recommendedSource = "model-best (neither matches sub+tax)";
-
-                    recommendedTotal  = bestAltVal;
-
-                    adjusted = true;
-                } else if (enteredProb > candProb) {
-                    recommendedSource = "entered (model prefers it)";
-
-                    recommendedTotal  = enteredAmount;
-
-                    adjusted = true;
-                }
-            }
-        } else if (combined < 0.55 && bestAltRecord != null && bestAltProb >= 0.70
-                && bestAltProb > candProb + 0.10) {
-            recommendedSource = "model-best (no components)";
-
-            recommendedTotal  = bestAltVal;
-
-            adjusted = true;
-        }
-
-
-        if (Math.abs(recommendedTotal - candidate) < 0.005) {
-            adjusted = false;
-        }
-
-
-        // ============ Reasoning string ============
-        StringBuilder reason = new StringBuilder();
-
-        reason.append("Stage 1 (PriceClf):\n");
-
-        reason.append(String.format(Locale.US, "  circled $%.2f  P(isPrice)=%.2f%n", candidate, candPriceProb));
-
-        if (haveEntered) {
-            reason.append(String.format(Locale.US,
-                    "  entered $%.2f  P(isPrice)=%.2f%n", enteredAmount, enteredPriceProb));
-        }
-
-        reason.append("Stage 2 (TotalLearner):\n");
-
-        reason.append(String.format(Locale.US,
-                "  circled $%.2f  P(isTotal)=%.2f  (best other: $%.2f P=%.2f)%n",
-                candidate, candProb, bestAltVal, bestAltProb));
-
-        if (haveEntered) {
-            reason.append(String.format(Locale.US,
-                    "  entered $%.2f  P(isTotal)=%.2f%n", enteredAmount, enteredProb));
-        }
-
-        reason.append("Cross-check:\n");
-
-        if (haveEntered) {
-            if (enteredMatchesMarked) {
-                reason.append("  OK entered and circled agree to within " + fmt(TOL_STRICT) + "\n");
-            } else {
-                reason.append("  WARN entered and circled differ — sanity check decides\n");
-            }
-        } else {
-            reason.append("  (no entered value provided)\n");
-        }
-
-        reason.append("Sanity check:  ").append(sanityCheck).append("\n");
-
-        reason.append(String.format(Locale.US,
-                "Combined:  %.2f  ->  recommended %.2f (%s)%n",
-                combined, recommendedTotal, recommendedSource));
-
-
-        Logger.i("Verifier", String.format(Locale.US,
+        // === Combine (circled) and decide what to recommend ===
+        final double combinedConfidence = combineAndAdjust(
+                candidate, predicted, componentCount, candProb, candPriceProb,
+                bestAlt, subtotal, haveEntered, enteredMatchesMarked, enteredProb);
+        final Recommendation recommendation = decideRecommendation(
+                candidate, enteredAmount, predicted, haveEntered, enteredMatchesMarked,
+                bestAlt, candProb, enteredProb, combinedConfidence);
+        final boolean adjusted = (Math.abs(recommendation.total - candidate) >= PRICE_DELTA_TOLERANCE);
+
+        final String reasoning = buildReasoning(candidate, candPriceProb, haveEntered,
+                enteredAmount, enteredPriceProb, candProb, bestAlt, enteredProb,
+                enteredMatchesMarked, sanityCheck.text, combinedConfidence, recommendation);
+
+        final double modelChoice = (bestAlt.record != null && bestAlt.probability > candProb)
+                ? bestAlt.value
+                : candidate;
+
+        Logger.i(LOG_TAG, String.format(Locale.US,
                 "verdict: total=%.2f  confidence=%.2f  adjusted=%s  source=%s",
-                recommendedTotal, combined, adjusted, recommendedSource));
-
-        Logger.i("Verifier", "reason: " + reason);
-
+                recommendation.total, combinedConfidence, adjusted, recommendation.source));
+        Logger.i(LOG_TAG, "reason: " + reasoning);
         Logger.section("TOTAL VERIFY END");
 
-
-        double modelChoice;
-
-        if (bestAltRecord != null && bestAltProb > candProb) {
-            modelChoice = bestAltVal;
-        } else {
-            modelChoice = candidate;
-        }
-
-        double enteredAmountOut;
-
-        double enteredPriceProbOut;
-
-        double enteredProbOut;
-
-        if (haveEntered) {
-            enteredAmountOut = enteredAmount;
-
-            enteredPriceProbOut = enteredPriceProb;
-
-            enteredProbOut = enteredProb;
-        } else {
-            enteredAmountOut = Double.NaN;
-
-            enteredPriceProbOut = Double.NaN;
-
-            enteredProbOut = Double.NaN;
-        }
-
-        return new Result(recommendedTotal, combined, reason.toString(), adjusted,
-                candPriceProb, candProb, bestAltProb,
+        return new Result(recommendation.total, combinedConfidence, reasoning.toString(),
+                adjusted,
+                candPriceProb, candProb, bestAlt.probability,
                 modelChoice,
-                enteredAmountOut,
-                enteredPriceProbOut,
-                enteredProbOut,
+                enteredResult.enteredAmount, enteredResult.enteredPriceProbability, enteredResult.enteredProbability,
                 enteredMatchesMarked,
-                sanityCheck,
-                recommendedTotal,
-                recommendedSource,
+                sanityCheck.text,
+                recommendation.total,
+                recommendation.source,
                 sanityDelta);
     }
 
 
-    @Nullable
-    private static Double pickOne(List<DetectedNumber> numbers, String keyword) {
-        Double found = null;
+    private static void logVerifyHeader(double candidate, double enteredAmount,
+                                        List<DetectedNumber> allNumbers) {
+        final String enteredLabel;
+        if (Double.isNaN(enteredAmount)) {
+            enteredLabel = NO_ENTERED_LABEL;
+        } else {
+            enteredLabel = fmt(enteredAmount);
+        }
+        final int allCount;
+        if (allNumbers == null) {
+            allCount = 0;
+        } else {
+            allCount = allNumbers.size();
+        }
+        Logger.i(LOG_TAG, "candidate(circled)=" + candidate
+                + "  entered=" + enteredLabel
+                + "  (all numbers: " + allCount + ")");
+    }
 
-        for (DetectedNumber n : numbers) {
-            if (keyword.equals(n.keyword)) found = n.value;
+
+    // ============ Stage 1: PriceClassifier ============
+
+    private static final class Stage1Result {
+        final DetectedNumber candidateRecord;
+        final List<DetectedNumber> prices;
+        final double candidatePriceProbability;
+
+        Stage1Result(DetectedNumber candidateRecord, List<DetectedNumber> prices,
+                     double candidatePriceProbability) {
+            this.candidateRecord = candidateRecord;
+            this.prices = prices;
+            this.candidatePriceProbability = candidatePriceProbability;
+        }
+    }
+
+
+    private static Stage1Result runStage1(double candidate, List<DetectedNumber> allNumbers) {
+        final List<DetectedNumber> safeAll = (allNumbers == null)
+                ? Collections.emptyList() : allNumbers;
+
+        final DetectedNumber candidateRecord = ensureCandidateRecord(safeAll, candidate);
+
+        final List<DetectedNumber> prices = new ArrayList<>();
+        for (final DetectedNumber detected : safeAll) {
+            final double[] features = PriceClassifier.extractFeatures(detected);
+            final double probability = PriceClassifier.predictProbability(features);
+            final boolean keep = probability >= PriceClassifier.PRICE_THRESHOLD;
+
+            final String keepLabel;
+            if (keep) {
+                keepLabel = KEEPER_LABEL;
+            } else {
+                keepLabel = DROP_LABEL;
+            }
+            Logger.i(PRICE_LOG_TAG, String.format(Locale.US,
+                    "  $%.2f (line %d, kw=%s)  P(isPrice)=%.3f  %s",
+                    detected.value, detected.lineIndex, detected.keyword, probability, keepLabel));
+
+            if (keep) {
+                prices.add(detected);
+            }
+        }
+        Logger.i(PRICE_LOG_TAG, "kept " + prices.size() + " of " + safeAll.size() + " numbers as prices");
+
+        final double candidatePriceProb = PriceClassifier.predictProbability(
+                PriceClassifier.extractFeatures(candidateRecord));
+        Logger.i(PRICE_LOG_TAG, String.format(Locale.US,
+                "candidate(circled) $%.2f  P(isPrice)=%.3f", candidate, candidatePriceProb));
+
+        return new Stage1Result(candidateRecord, prices, candidatePriceProb);
+    }
+
+
+    private static DetectedNumber ensureCandidateRecord(List<DetectedNumber> allNumbers, double candidate) {
+        final DetectedNumber found = findLineWithValue(allNumbers, candidate);
+        if (found != null) return found;
+        return new DetectedNumber(candidate, SYNTHETIC_LINE_TEXT, 0, null);
+    }
+
+
+    // ============ Heuristic: pick components, build predicted total ============
+
+    private static final class HeuristicResult {
+        final Double subtotal;
+        final Double tax;
+        final Double tip;
+        final List<DetectedNumber> others;
+        final ComponentSum components;
+
+        HeuristicResult(Double subtotal, Double tax, Double tip,
+                        List<DetectedNumber> others, ComponentSum components) {
+            this.subtotal = subtotal;
+            this.tax = tax;
+            this.tip = tip;
+            this.others = others;
+            this.components = components;
+        }
+    }
+
+
+    private static final class ComponentSum {
+        double predictedTotal;
+        int componentCount;
+        double sanityDelta;
+        final StringBuilder expression = new StringBuilder();
+
+        ComponentSum() { this.sanityDelta = Double.NaN; }
+    }
+
+
+    private static HeuristicResult runHeuristic(double candidate, List<DetectedNumber> prices) {
+        final List<DetectedNumber> others = buildOthersList(candidate, prices);
+
+        final Double subtotal = pickOne(others, "subtotal");
+        final Double tax = pickOne(others, "tax");
+        final Double tip = pickOne(others, "tip");
+        Logger.i(LOG_TAG, "components: subtotal=" + subtotal
+                + "  tax=" + tax + "  tip=" + tip);
+
+        final ComponentSum components = buildComponentSum(others, candidate, subtotal, tax, tip);
+        Logger.i(LOG_TAG, "predicted(sub+tax+tip)=" + fmt(components.predictedTotal)
+                + "  expr=" + components.expression);
+
+        return new HeuristicResult(subtotal, tax, tip, others, components);
+    }
+
+
+    private static List<DetectedNumber> buildOthersList(double candidate, List<DetectedNumber> prices) {
+        final List<DetectedNumber> others = new ArrayList<>();
+        for (final DetectedNumber detected : prices) {
+            if (Math.abs(detected.value - candidate) < PRICE_DELTA_TOLERANCE) continue;
+            others.add(detected);
+        }
+        Collections.sort(others, (a, b) -> Double.compare(a.value, b.value));
+        return others;
+    }
+
+
+    private static ComponentSum buildComponentSum(List<DetectedNumber> others, double candidate,
+                                                 Double subtotal, Double tax, Double tip) {
+        final ComponentSum sum = new ComponentSum();
+        appendLabeledComponent(sum, "subtotal", subtotal);
+        appendLabeledComponent(sum, "tax", tax);
+        appendLabeledComponent(sum, "tip", tip);
+        if (sum.componentCount == 0) {
+            tryLineItemSumFallback(sum, others, candidate);
+        }
+        return sum;
+    }
+
+
+    private static void appendLabeledComponent(ComponentSum sum, String label, Double value) {
+        if (value == null) return;
+        sum.predictedTotal += value;
+        sum.componentCount++;
+        if (sum.expression.length() > 0) {
+            sum.expression.append(" + ");
+        }
+        sum.expression.append(label).append("(").append(fmt(value)).append(")");
+    }
+
+
+    private static void tryLineItemSumFallback(ComponentSum sum, List<DetectedNumber> others, double candidate) {
+        double lineItemSum = 0.0;
+        int itemCount = 0;
+        for (final DetectedNumber detected : others) {
+            if (detected.value < candidate && detected.value > LINE_ITEM_MIN) {
+                lineItemSum += detected.value;
+                itemCount++;
+            }
+        }
+        if (itemCount >= MIN_LINE_ITEMS_FOR_SUM) {
+            sum.predictedTotal = lineItemSum;
+            sum.componentCount = 1;
+            sum.sanityDelta = Double.NaN;  // sanity is skipped for line-item-sum total
+            sum.expression.setLength(0);
+            sum.expression.append("lineItemsSum(").append(fmt(lineItemSum)).append(")");
+        }
+    }
+
+
+    // ============ Stage 2: LinearLearner ============
+
+    private static final class Stage2Result {
+        final double candidateProbability;
+        final BestAlternative bestAlternative;
+
+        Stage2Result(double candidateProbability, BestAlternative bestAlternative) {
+            this.candidateProbability = candidateProbability;
+            this.bestAlternative = bestAlternative;
+        }
+    }
+
+
+    private static final class BestAlternative {
+        final double probability;
+        final double value;
+        @Nullable final DetectedNumber record;
+
+        BestAlternative(double probability, double value, @Nullable DetectedNumber record) {
+            this.probability = probability;
+            this.value = value;
+            this.record = record;
+        }
+    }
+
+
+    private static Stage2Result runStage2(DetectedNumber candidateRecord,
+                                          List<DetectedNumber> others,
+                                          List<DetectedNumber> prices,
+                                          Double subtotal, Double tax, Double tip,
+                                          int totalLines) {
+        final double[] candidateFeatures = LinearLearner.extractFeatures(
+                candidateRecord, prices, subtotal, tax, tip, totalLines);
+        final double candLogit = LinearLearner.predictLogit(candidateFeatures);
+        final double candProb = LinearLearner.predictProbability(candidateFeatures);
+        Logger.i(LEARNER_LOG_TAG, "candidate(circled)=" + fmt(candidateRecord.value)
+                + "  logit=" + String.format(Locale.US, "%+.3f", candLogit)
+                + "  P=" + String.format(Locale.US, "%.3f", candProb));
+
+        final BestAlternative bestAlt = findBestAlternative(others, prices, subtotal, tax, tip, totalLines);
+        Logger.i(LEARNER_LOG_TAG, String.format(Locale.US,
+                "best alternative: $%.2f  P=%.3f", bestAlt.value, bestAlt.probability));
+
+        return new Stage2Result(candProb, bestAlt);
+    }
+
+
+    private static BestAlternative findBestAlternative(List<DetectedNumber> others,
+                                                      List<DetectedNumber> prices,
+                                                      Double subtotal, Double tax, Double tip,
+                                                      int totalLines) {
+        double bestProb = 0.0;
+        double bestValue = others.isEmpty() ? 0.0 : others.get(0).value;
+        DetectedNumber bestRecord = null;
+
+        for (final DetectedNumber other : others) {
+            final double[] features = LinearLearner.extractFeatures(
+                    other, prices, subtotal, tax, tip, totalLines);
+            final double probability = LinearLearner.predictProbability(features);
+            Logger.i(LEARNER_LOG_TAG, String.format(Locale.US,
+                    "  price=$%.2f (line %d, kw=%s)  P(isTotal)=%.3f",
+                    other.value, other.lineIndex, other.keyword, probability));
+            if (probability > bestProb) {
+                bestProb = probability;
+                bestValue = other.value;
+                bestRecord = other;
+            }
+        }
+        return new BestAlternative(bestProb, bestValue, bestRecord);
+    }
+
+
+    // ============ Entered-vs-circled cross-check ============
+
+    private static final class EnteredResult {
+        final double enteredProbability;
+        final double enteredPriceProbability;
+        final double enteredAmount;
+
+        EnteredResult(double enteredProbability, double enteredPriceProbability,
+                      double enteredAmount) {
+            this.enteredProbability = enteredProbability;
+            this.enteredPriceProbability = enteredPriceProbability;
+            this.enteredAmount = enteredAmount;
+        }
+    }
+
+
+    private static EnteredResult runEnteredIfPresent(boolean haveEntered, double enteredAmount,
+                                                     List<DetectedNumber> allNumbers,
+                                                     List<DetectedNumber> prices,
+                                                     Double subtotal, Double tax, Double tip,
+                                                     int totalLines) {
+        if (!haveEntered) {
+            return new EnteredResult(Double.NaN, Double.NaN, Double.NaN);
+        }
+        final DetectedNumber enteredRecord = ensureEnteredRecord(allNumbers, enteredAmount);
+        final double enteredPriceProb = PriceClassifier.predictProbability(
+                PriceClassifier.extractFeatures(enteredRecord));
+        Logger.i(PRICE_LOG_TAG, String.format(Locale.US,
+                "candidate(entered) $%.2f  P(isPrice)=%.3f", enteredAmount, enteredPriceProb));
+
+        final double[] enteredFeatures = LinearLearner.extractFeatures(
+                enteredRecord, prices, subtotal, tax, tip, totalLines);
+        final double enteredProb = LinearLearner.predictProbability(enteredFeatures);
+        Logger.i(LEARNER_LOG_TAG, String.format(Locale.US,
+                "candidate(entered) $%.2f  P(isTotal)=%.3f", enteredAmount, enteredProb));
+
+        return new EnteredResult(enteredProb, enteredPriceProb, enteredAmount);
+    }
+
+
+    private static DetectedNumber ensureEnteredRecord(List<DetectedNumber> allNumbers, double enteredAmount) {
+        final DetectedNumber found = findLineWithValue(allNumbers, enteredAmount);
+        if (found != null) return found;
+        return new DetectedNumber(enteredAmount, USER_TYPED_LINE_TEXT, 0, null);
+    }
+
+
+    private static void logCrossCheck(boolean haveEntered, double enteredAmount,
+                                      double candidate, boolean enteredMatchesMarked) {
+        final String enteredDisplay;
+        if (haveEntered) {
+            enteredDisplay = fmt(enteredAmount);
+        } else {
+            enteredDisplay = NO_ENTERED_LABEL;
+        }
+        Logger.i(LOG_TAG, String.format(Locale.US,
+                "cross-check: entered=%s  circled=%s  match=%s",
+                enteredDisplay, fmt(candidate), enteredMatchesMarked));
+    }
+
+
+    // ============ Sanity check ============
+
+    private static final class SanityCheck {
+        final String text;
+        final double sanityDelta;
+
+        SanityCheck(String text, double sanityDelta) {
+            this.text = text;
+            this.sanityDelta = sanityDelta;
+        }
+    }
+
+
+    private static SanityCheck buildSanityCheck(boolean haveEntered, double enteredAmount,
+                                               int componentCount, double candidate,
+                                               double predicted, double sanityDelta,
+                                               double itemSum, int itemCount,
+                                               double itemSumDelta) {
+        if (componentCount == 0 && itemCount == 0) {
+            return new SanityCheck("no subtotal/tax/tip labels or line items — sanity check skipped", Double.NaN);
         }
 
-        return found;
+        final StringBuilder msg = new StringBuilder();
+        boolean firstClause = true;
+
+        if (componentCount > 0) {
+            msg.append(buildSubPlusTaxMessage(haveEntered, enteredAmount, candidate, predicted));
+            firstClause = false;
+        }
+
+        if (itemCount >= 2) {
+            // Only report the items-sum check when we have at least 2
+            // line items — a single item could be a total itself and
+            // "sum == total" would be trivially true.
+            if (!firstClause) {
+                msg.append("; ");
+            }
+
+            final String agreeLabel;
+            if (itemSumDelta <= TOL_STRICT) {
+                agreeLabel = "agrees";
+            } else if (itemSumDelta <= TOL_LOOSE) {
+                agreeLabel = "close";
+            } else {
+                agreeLabel = "disagrees";
+            }
+
+            msg.append(String.format(Locale.US,
+                    "items sum=%s  (circled delta=$%.2f, %s)",
+                    fmt(itemSum), itemSumDelta, agreeLabel));
+        }
+
+        return new SanityCheck(msg.toString(), sanityDelta);
+    }
+
+
+    private static String buildSubPlusTaxMessage(boolean haveEntered, double enteredAmount,
+                                                double candidate, double predicted) {
+        final StringBuilder msg = new StringBuilder();
+        msg.append(String.format(Locale.US, "sub+tax+tip=%s  (circled delta=$%.2f",
+                fmt(predicted), Math.abs(candidate - predicted)));
+        if (haveEntered) {
+            msg.append(String.format(Locale.US, ", entered delta=$%.2f",
+                    Math.abs(enteredAmount - predicted)));
+        }
+        msg.append(")");
+        return msg.toString();
     }
 
 
     /**
+     * Sums the "line item" prices on a receipt — the prices that aren't
+     * the candidate, aren't subtotal/tax/tip, and look like real prices
+     * (have two decimal places). Used as a free consistency check: a
+     * receipt's total should match the sum of its line items.
+     *
+     * <p>Returns {@code <0, 0, 0>} when no line items are found.</p>
+     */
+    private static LineItemSum summarizeLineItems(List<DetectedNumber> others,
+                                                  Double subtotal, Double tax, Double tip) {
+        double sum = 0.0;
+        int count = 0;
+
+        for (final DetectedNumber number : others) {
+            if (number.keyword != null) {
+                continue;
+            }
+
+            if (!looksLikeRealPrice(number.value)) {
+                continue;
+            }
+
+            // Skip values that match a known component — they're already
+            // accounted for in the sub+tax+tip sum, not in the line items.
+            if (subtotal != null && approxEquals(number.value, subtotal)) {
+                continue;
+            }
+
+            if (tax != null && approxEquals(number.value, tax)) {
+                continue;
+            }
+
+            if (tip != null && approxEquals(number.value, tip)) {
+                continue;
+            }
+
+            sum += number.value;
+            count++;
+        }
+
+        return new LineItemSum(sum, count);
+    }
+
+
+    private static boolean looksLikeRealPrice(double value) {
+        // Two decimal places and positive. Catches the "5.00" of a real
+        // price while skipping integers like a quantity "3" or a code "133337".
+        if (value <= 0.0) {
+            return false;
+        }
+
+        final double cents = value * 100.0;
+        return Math.abs(cents - Math.round(cents)) < 0.005;
+    }
+
+
+    private static boolean approxEquals(double a, double b) {
+        return Math.abs(a - b) < 0.01;
+    }
+
+
+    /** Tuple of (sum, count) returned by {@link #summarizeLineItems}. */
+    private static final class LineItemSum {
+        final double sum;
+        final int count;
+
+        LineItemSum(double sum, int count) {
+            this.sum = sum;
+            this.count = count;
+        }
+    }
+
+
+    // ============ Combine + adjust + recommend ============
+
+    private static double combineAndAdjust(double candidate, double predicted, int componentCount,
+                                          double candProb, double candPriceProb,
+                                          BestAlternative bestAlt, Double subtotal,
+                                          boolean haveEntered, boolean enteredMatchesMarked,
+                                          double enteredProb) {
+        final double delta = Math.abs(candidate - predicted);
+        double combined = (deltaConfidence(componentCount, predicted, delta) + candProb) / 2.0;
+        combined = applyAltPressure(combined, candProb, bestAlt.probability);
+        combined = applyHighlightBoost(combined, candProb, bestAlt.probability);
+        combined = applyBelowSubtotalPenalty(combined, candidate, subtotal);
+        combined = applyDeltaBump(combined, delta, candProb);
+        combined = applyLowPriceProbPenalty(combined, candPriceProb);
+        combined = applyDisagreePenalty(combined, haveEntered, enteredMatchesMarked, candProb, enteredProb);
+        combined = applyMatchBoost(combined, enteredMatchesMarked);
+        return clampConfidence(combined);
+    }
+
+
+    private static double deltaConfidence(int componentCount, double predicted, double delta) {
+        if (componentCount == 0) return CONF_NO_COMPONENTS;
+        if (delta <= TOL_STRICT) return CONF_DELTA_STRICT;
+        if (delta <= TOL_TIGHT) return CONF_DELTA_TIGHT;
+        if (delta <= TOL_LOOSE) return CONF_DELTA_LOOSE;
+        if (predicted > 0 && delta <= predicted * DELTA_RATIO_THRESHOLD) return CONF_DELTA_RATIO;
+        return CONF_DELTA_FLOOR;
+    }
+
+
+    private static double applyAltPressure(double combined, double candProb, double bestAltProb) {
+        final double altPressure = Math.max(0.0, bestAltProb - candProb - ALT_PRESSURE_MARGIN);
+        return Math.max(COMBINED_FLOOR, Math.min(COMBINED_MAX, combined - altPressure));
+    }
+
+
+    private static double applyHighlightBoost(double combined, double candProb, double bestAltProb) {
+        if (candProb >= HIGH_CONFIDENCE_THRESHOLD && bestAltProb <= candProb) {
+            return Math.min(COMBINED_MAX, combined + HIGH_CONFIDENCE_BUMP);
+        }
+        return combined;
+    }
+
+
+    private static double applyBelowSubtotalPenalty(double combined, double candidate, Double subtotal) {
+        if (subtotal != null && candidate < subtotal - SUBTOTAL_FLOOR) {
+            return Math.max(BELOW_SUBTOTAL_FLOOR, combined - BELOW_SUBTOTAL_PENALTY);
+        }
+        return combined;
+    }
+
+
+    private static double applyDeltaBump(double combined, double delta, double candProb) {
+        if (delta <= TOL_LOOSE && candProb >= DELTA_TIGHT_BUMP_THRESHOLD) {
+            return Math.min(COMBINED_MAX, combined + HIGH_CONFIDENCE_BUMP);
+        }
+        return combined;
+    }
+
+
+    private static double applyLowPriceProbPenalty(double combined, double candPriceProb) {
+        if (candPriceProb < LOW_PRICE_PROB_THRESHOLD) {
+            return Math.max(0.05, combined - LOW_PRICE_PROB_PENALTY);
+        }
+        return combined;
+    }
+
+
+    private static double applyDisagreePenalty(double combined, boolean haveEntered,
+                                              boolean enteredMatchesMarked,
+                                              double candProb, double enteredProb) {
+        if (haveEntered && !enteredMatchesMarked) {
+            final double disagreeDelta = Math.abs(enteredProb - candProb);
+            return Math.max(COMBINED_FLOOR,
+                    combined - DISAGREE_PENALTY_BASE - DISAGREE_PENALTY_SCALE * disagreeDelta);
+        }
+        return combined;
+    }
+
+
+    private static double applyMatchBoost(double combined, boolean enteredMatchesMarked) {
+        if (enteredMatchesMarked) {
+            return Math.min(COMBINED_MAX, combined + MATCH_BOOST);
+        }
+        return combined;
+    }
+
+
+    private static double clampConfidence(double confidence) {
+        return Math.max(COMBINED_FLOOR, Math.min(COMBINED_MAX, confidence));
+    }
+
+
+    // ============ Recommendation ============
+
+    private static final class Recommendation {
+        final double total;
+        final String source;
+
+        Recommendation(double total, String source) {
+            this.total = total;
+            this.source = source;
+        }
+    }
+
+
+    private static Recommendation decideRecommendation(double candidate, double enteredAmount,
+                                                      double predicted,
+                                                      boolean haveEntered,
+                                                      boolean enteredMatchesMarked,
+                                                      BestAlternative bestAlt,
+                                                      double candProb, double enteredProb,
+                                                      double combinedConfidence) {
+        // Default: trust the circled value.
+        if (!(haveEntered && !enteredMatchesMarked)) {
+            if (shouldPickModelBestForNoComponents(combinedConfidence, bestAlt, candProb)) {
+                return new Recommendation(bestAlt.value, SRC_MODEL_BEST_NO_COMPONENTS);
+            }
+            return new Recommendation(candidate, SRC_CIRCLED);
+        }
+        return recommendOnDisagreement(candidate, enteredAmount, predicted, bestAlt, candProb, enteredProb);
+    }
+
+
+    private static boolean shouldPickModelBestForNoComponents(double combinedConfidence,
+                                                             BestAlternative bestAlt, double candProb) {
+        return combinedConfidence < 0.55
+                && bestAlt.record != null
+                && bestAlt.probability >= 0.70
+                && bestAlt.probability > candProb + ALT_PRESSURE_MARGIN;
+    }
+
+
+    private static Recommendation recommendOnDisagreement(double candidate, double enteredAmount,
+                                                        double predicted,
+                                                        BestAlternative bestAlt,
+                                                        double candProb, double enteredProb) {
+        final double circledSanityDelta = Math.abs(candidate - predicted);
+        final double enteredSanityDelta = Math.abs(enteredAmount - predicted);
+        final boolean sanityHelpsCircled = (circledSanityDelta <= enteredSanityDelta)
+                && (circledSanityDelta <= TOL_LOOSE);
+        final boolean sanityHelpsEntered = (enteredSanityDelta <= circledSanityDelta)
+                && (enteredSanityDelta <= TOL_LOOSE);
+
+        if (sanityHelpsCircled && !sanityHelpsEntered) {
+            return new Recommendation(candidate, SRC_CIRCLED_SANITY);
+        }
+        if (sanityHelpsEntered && !sanityHelpsCircled) {
+            return new Recommendation(enteredAmount, SRC_ENTERED_SANITY);
+        }
+        if (sanityHelpsCircled && sanityHelpsEntered) {
+            return recommendOnBothSane(candidate, enteredAmount, candProb, enteredProb);
+        }
+        return recommendOnNeitherSane(candidate, enteredAmount, bestAlt, candProb, enteredProb);
+    }
+
+
+    private static Recommendation recommendOnBothSane(double candidate, double enteredAmount,
+                                                    double candProb, double enteredProb) {
+        if (enteredProb > candProb + ALT_PRESSURE_MARGIN) {
+            return new Recommendation(enteredAmount, SRC_ENTERED_MODEL_SANITY);
+        }
+        return new Recommendation(candidate, SRC_CIRCLED_MODEL_SANITY);
+    }
+
+
+    private static Recommendation recommendOnNeitherSane(double candidate, double enteredAmount,
+                                                        BestAlternative bestAlt,
+                                                        double candProb, double enteredProb) {
+        if (bestAlt.record != null && bestAlt.probability > Math.max(candProb, enteredProb)) {
+            return new Recommendation(bestAlt.value, SRC_MODEL_BEST_NO_MATCH);
+        }
+        if (enteredProb > candProb) {
+            return new Recommendation(enteredAmount, SRC_ENTERED_MODEL_PREFERS);
+        }
+        return new Recommendation(candidate, SRC_CIRCLED);
+    }
+
+
+    // ============ Reasoning string ============
+
+    private static String buildReasoning(double candidate, double candPriceProb,
+                                         boolean haveEntered, double enteredAmount,
+                                         double enteredPriceProb, double candProb,
+                                         BestAlternative bestAlt, double enteredProb,
+                                         boolean enteredMatchesMarked,
+                                         String sanityCheckText,
+                                         double combinedConfidence,
+                                         Recommendation recommendation) {
+        final StringBuilder reason = new StringBuilder();
+        appendStage1Lines(reason, candidate, candPriceProb, haveEntered, enteredAmount, enteredPriceProb);
+        appendStage2Lines(reason, candidate, candProb, bestAlt, haveEntered, enteredAmount, enteredProb);
+        appendCrossCheckLines(reason, haveEntered, enteredMatchesMarked);
+        appendSanityAndSummary(reason, sanityCheckText, combinedConfidence, recommendation);
+        return reason.toString();
+    }
+
+
+    private static void appendStage1Lines(StringBuilder reason, double candidate, double candPriceProb,
+                                          boolean haveEntered, double enteredAmount,
+                                          double enteredPriceProb) {
+        reason.append("Stage 1 (PriceClf):\n");
+        reason.append(String.format(Locale.US, "  circled $%.2f  P(isPrice)=%.2f%n", candidate, candPriceProb));
+        if (haveEntered) {
+            reason.append(String.format(Locale.US,
+                    "  entered $%.2f  P(isPrice)=%.2f%n", enteredAmount, enteredPriceProb));
+        }
+    }
+
+
+    private static void appendStage2Lines(StringBuilder reason, double candidate, double candProb,
+                                          BestAlternative bestAlt, boolean haveEntered,
+                                          double enteredAmount, double enteredProb) {
+        reason.append("Stage 2 (TotalLearner):\n");
+        reason.append(String.format(Locale.US,
+                "  circled $%.2f  P(isTotal)=%.2f  (best other: $%.2f P=%.2f)%n",
+                candidate, candProb, bestAlt.value, bestAlt.probability));
+        if (haveEntered) {
+            reason.append(String.format(Locale.US,
+                    "  entered $%.2f  P(isTotal)=%.2f%n", enteredAmount, enteredProb));
+        }
+    }
+
+
+    private static void appendCrossCheckLines(StringBuilder reason, boolean haveEntered,
+                                             boolean enteredMatchesMarked) {
+        reason.append("Cross-check:\n");
+        if (!haveEntered) {
+            reason.append("  (no entered value provided)\n");
+            return;
+        }
+        if (enteredMatchesMarked) {
+            reason.append("  OK entered and circled agree to within " + fmt(TOL_STRICT) + "\n");
+        } else {
+            reason.append("  WARN entered and circled differ — sanity check decides\n");
+        }
+    }
+
+
+    private static void appendSanityAndSummary(StringBuilder reason, String sanityCheckText,
+                                                double combinedConfidence,
+                                                Recommendation recommendation) {
+        reason.append("Sanity check:  ").append(sanityCheckText).append("\n");
+        reason.append(String.format(Locale.US,
+                "Combined:  %.2f  ->  recommended %.2f (%s)%n",
+                combinedConfidence, recommendation.total, recommendation.source));
+    }
+
+
+    // ============ Ensemble (10-run consensus) ============
+
+    /**
      * The size of the default ensemble. The pipeline runs the full
-     * verifier against this many of the top candidates and votes on the
-     * final answer. 10 was picked because the OCR detector typically
-     * surfaces ~10 "plausible" totals on a noisy receipt (subtotal,
-     * tax, tip, line items, suggested tip, etc.) and we want a full
-     * panel vote across all of them.
+     * verifier against this many of the top candidates and votes on
+     * the final answer. 10 was picked because the OCR detector
+     * typically surfaces ~10 "plausible" totals on a noisy receipt
+     * (subtotal, tax, tip, line items, suggested tip, etc.) and we
+     * want a full panel vote across all of them.
      */
     public static final int DEFAULT_ENSEMBLE_SIZE = 10;
 
 
     /**
      * Runs the verifier on the top {@code ensembleSize} candidates by
-     * P(isTotal) and returns a single combined Result that reflects the
-     * panel's consensus. This is the "10 runs" version of the pipeline:
-     * instead of trusting one candidate, we trust whatever most of the
-     * top candidates agree on.
+     * P(isTotal) and returns a single combined Result that reflects
+     * the panel's consensus. This is the "10 runs" version of the
+     * pipeline: instead of trusting one candidate, we trust
+     * whatever most of the top candidates agree on.
      *
      * <p>The "confidence" of the returned Result is the per-run
-     * confidence of the candidate that won the vote, blended with the
-     * vote share (more votes = higher confidence).</p>
+     * confidence of the candidate that won the vote, blended with
+     * the vote share (more votes = higher confidence).</p>
      *
      * <p>Cost: {@code ensembleSize} full {@link #verify} calls. On a
      * real device that's well under a second for 10 candidates.</p>
@@ -734,153 +1074,69 @@ public final class TotalVerifier {
         if (allNumbers == null || allNumbers.isEmpty()) {
             return verify(seedCandidate, allNumbers, enteredAmount);
         }
-
         if (ensembleSize <= 1) {
             return verify(seedCandidate, allNumbers, enteredAmount);
         }
 
         Logger.section("ENSEMBLE VERIFY (N=" + ensembleSize + ")");
 
-        // ---- Step 1: run PriceClassifier on every number once ----
-        List<DetectedNumber> prices = new ArrayList<>();
+        // Step 1: run PriceClassifier on every number once.
+        final List<DetectedNumber> prices = filterToPrices(allNumbers);
 
-        for (DetectedNumber n : allNumbers) {
-            double p = PriceClassifier.predictProbability(PriceClassifier.extractFeatures(n));
-
-            if (p >= PriceClassifier.PRICE_THRESHOLD) prices.add(n);
-        }
-
-        // ---- Step 2: score every price with LinearLearner and rank ----
-        Double subtotal = pickOne(prices, "subtotal");
-
-        Double tax = pickOne(prices, "tax");
-
-        Double tip = pickOne(prices, "tip");
-
-        int totalLines = maxLineIndex(allNumbers) + 1;
-
-        // Sort: highest P(isTotal) first.
-        List<double[]> scored = new ArrayList<>();
-
-        for (DetectedNumber n : prices) {
-            double[] f = LinearLearner.extractFeatures(n, prices, subtotal, tax, tip, totalLines);
-
-            double p = LinearLearner.predictProbability(f);
-
-            scored.add(new double[]{n.value, p, f[0], f[1]});
-        }
-
-        scored.sort((a, b) -> Double.compare(b[1], a[1])); // desc
-
-        int N = Math.min(ensembleSize, scored.size());
-
-        if (N < 1) {
+        // Step 2: score every price with LinearLearner and rank.
+        final Double subtotal = pickOne(prices, "subtotal");
+        final Double tax = pickOne(prices, "tax");
+        final Double tip = pickOne(prices, "tip");
+        final int totalLines = maxLineIndex(allNumbers) + 1;
+        final List<ScoredCandidate> scored = scoreAndRank(prices, subtotal, tax, tip, totalLines);
+        final int candidateCount = Math.min(ensembleSize, scored.size());
+        if (candidateCount < 1) {
             return verify(seedCandidate, allNumbers, enteredAmount);
         }
 
-
-        // ---- Step 3: full verify on the top N, count votes on recommendedTotal ----
+        // Step 3: full verify on the top N, count votes on recommendedTotal.
         // Use a small tolerance ($0.01) for matching recommended totals.
-        java.util.Map<Long, double[]> buckets = new java.util.HashMap<>(); // key=cents -> [votes, weightedConf, lastRunIndex]
-
-        List<Result> runs = new ArrayList<>();
-
-        for (int i = 0; i < N; i++) {
-            double candidate = scored.get(i)[0];
-
-            Result r = verify(candidate, allNumbers, enteredAmount);
-
-            runs.add(r);
-
-            long key = Math.round(r.recommendedTotal * 100.0);
-
-            double[] bucket = buckets.get(key);
-
+        final Map<Long, double[]> voteBuckets = new HashMap<>();
+        final List<Result> runs = new ArrayList<>();
+        for (int i = 0; i < candidateCount; i++) {
+            final double candidate = scored.get(i).value;
+            final Result runResult = verify(candidate, allNumbers, enteredAmount);
+            runs.add(runResult);
+            final long key = Math.round(runResult.recommendedTotal * CENTS_SCALE);
+            double[] bucket = voteBuckets.get(key);
             if (bucket == null) {
                 bucket = new double[]{0.0, 0.0};
-
-                buckets.put(key, bucket);
+                voteBuckets.put(key, bucket);
             }
-
             bucket[0] += 1.0;
-
-            bucket[1] += r.confidence; // sum, divide by votes at the end
+            bucket[1] += runResult.confidence; // sum, divide by votes at the end
         }
 
-        // ---- Step 4: pick the bucket with the most votes ----
-        long winnerKey = 0;
+        // Step 4: pick the bucket with the most votes.
+        final VoteWinner winner = pickVoteWinner(voteBuckets);
+        final int winnerVotes = winner.votes;
+        final long winnerKey = winner.key;
 
-        int winnerVotes = -1;
+        // Find the actual Result that produced the winning total (the
+        // first one whose recommendedTotal matches the winner key,
+        // gives the most verbose reasoning string).
+        final Result winning = findWinningResult(runs, winnerKey);
+        final double[] winningBucket = voteBuckets.get(winnerKey);
+        final double weightedAvgConfidence = winningBucket[1] / winningBucket[0];
+        final double voteShare = (double) winnerVotes / candidateCount;
 
-        for (java.util.Map.Entry<Long, double[]> e : buckets.entrySet()) {
-            int v = (int) e.getValue()[0];
+        final double maxConfForWinner = maxConfidenceAmongWinners(runs, winnerKey);
+        final double ensembleConf = clampEnsemble(
+                ENSEMBLE_WEIGHT_MAX_CONF * maxConfForWinner
+                        + ENSEMBLE_WEIGHT_AVG_CONF * weightedAvgConfidence
+                        + ENSEMBLE_WEIGHT_VOTE_SHARE * voteShare);
 
-            if (v > winnerVotes) {
-                winnerVotes = v;
-
-                winnerKey = e.getKey();
-            }
-        }
-
-        // Find the actual Result that produced the winning total (the first
-        // one whose recommendedTotal matches the winner key, gives the
-        // most verbose reasoning string).
-        Result winning = null;
-
-        for (Result r : runs) {
-            if (Math.round(r.recommendedTotal * 100.0) == winnerKey) {
-                winning = r;
-
-                break;
-            }
-        }
-
-        if (winning == null) winning = runs.get(0);
-
-        double[] winBucket = buckets.get(winnerKey);
-
-        double weightedAvgConf = winBucket[1] / winBucket[0];
-
-        double voteShare = (double) winnerVotes / N;
-
-
-        // Confidence: blend the max-confidence run for the winner with
-        // the vote share. The max-confidence run represents the
-        // strongest single signal for the winning total; the vote
-        // share represents the panel consensus. When they agree
-        // (9/10 runs recommend X with high confidence), the ensemble
-        // confidence is high. When the panel is split or all the
-        // winning runs were low-confidence adjustments, confidence
-        // stays modest.
-        double maxConfForWinner = 0;
-
-        for (Result r : runs) {
-            if (Math.round(r.recommendedTotal * 100.0) == winnerKey
-                    && r.confidence > maxConfForWinner) {
-                maxConfForWinner = r.confidence;
-            }
-        }
-
-        double ensembleConf = (0.55 * maxConfForWinner) + (0.30 * weightedAvgConf) + (0.15 * voteShare);
-
-        ensembleConf = Math.max(0.0, Math.min(0.99, ensembleConf));
-
-        String summary = String.format(Locale.US,
+        final String summary = String.format(Locale.US,
                 "%d/%d runs voted $%.2f  max-conf=%.2f  avg-conf=%.2f  votes=%.0f%%",
-                winnerVotes, N, winning.recommendedTotal, maxConfForWinner, weightedAvgConf, voteShare * 100);
-
-        Logger.i("Verifier", "ENSEMBLE: " + summary);
-
-        for (Result r : runs) {
-            long k = Math.round(r.recommendedTotal * 100.0);
-
-            double[] b = buckets.get(k);
-
-            Logger.i("Verifier", String.format(Locale.US,
-                    "  run: cand=$%.2f  rec=$%.2f  conf=%.2f  votes-for-rec=%d  source=%s",
-                    r.total, r.recommendedTotal, r.confidence, (int) b[0], r.recommendedSource));
-        }
-
+                winnerVotes, candidateCount, winning.recommendedTotal, maxConfForWinner,
+                weightedAvgConfidence, voteShare * 100);
+        Logger.i(LOG_TAG, "ENSEMBLE: " + summary);
+        logPerRun(runs, voteBuckets);
         Logger.section("ENSEMBLE VERIFY END");
 
         return new Result(winning.recommendedTotal, ensembleConf, winning.reasoning, winning.wasAdjusted,
@@ -888,30 +1144,153 @@ public final class TotalVerifier {
                 winning.modelChoice, winning.enteredAmount, winning.enteredPriceProbability,
                 winning.enteredProbability, winning.enteredMatchesMarked, winning.sanityCheck,
                 winning.recommendedTotal, winning.recommendedSource, winning.sanityDelta,
-                winnerVotes, N, ensembleConf, summary);
+                winnerVotes, candidateCount, ensembleConf, summary);
+    }
+
+
+    private static List<DetectedNumber> filterToPrices(List<DetectedNumber> allNumbers) {
+        final List<DetectedNumber> prices = new ArrayList<>();
+        for (final DetectedNumber detected : allNumbers) {
+            final double p = PriceClassifier.predictProbability(
+                    PriceClassifier.extractFeatures(detected));
+            if (p >= PriceClassifier.PRICE_THRESHOLD) {
+                prices.add(detected);
+            }
+        }
+        return prices;
+    }
+
+
+    private static final class ScoredCandidate {
+        final double value;
+        final double probability;
+        final double hasTotalFeature;
+        final double hasComponentFeature;
+
+        ScoredCandidate(double value, double probability, double hasTotalFeature, double hasComponentFeature) {
+            this.value = value;
+            this.probability = probability;
+            this.hasTotalFeature = hasTotalFeature;
+            this.hasComponentFeature = hasComponentFeature;
+        }
+    }
+
+
+    private static List<ScoredCandidate> scoreAndRank(List<DetectedNumber> prices,
+                                                      Double subtotal, Double tax, Double tip,
+                                                      int totalLines) {
+        final List<ScoredCandidate> scored = new ArrayList<>();
+        for (final DetectedNumber detected : prices) {
+            final double[] features = LinearLearner.extractFeatures(
+                    detected, prices, subtotal, tax, tip, totalLines);
+            final double probability = LinearLearner.predictProbability(features);
+            scored.add(new ScoredCandidate(detected.value, probability, features[0], features[1]));
+        }
+        scored.sort((a, b) -> Double.compare(b.probability, a.probability)); // desc
+        return scored;
+    }
+
+
+    private static final class VoteWinner {
+        final long key;
+        final int votes;
+
+        VoteWinner(long key, int votes) {
+            this.key = key;
+            this.votes = votes;
+        }
+    }
+
+
+    private static VoteWinner pickVoteWinner(Map<Long, double[]> voteBuckets) {
+        long winnerKey = 0L;
+        int winnerVotes = -1;
+        for (final Map.Entry<Long, double[]> entry : voteBuckets.entrySet()) {
+            final int votes = (int) entry.getValue()[0];
+            if (votes > winnerVotes) {
+                winnerVotes = votes;
+                winnerKey = entry.getKey();
+            }
+        }
+        return new VoteWinner(winnerKey, winnerVotes);
+    }
+
+
+    private static Result findWinningResult(List<Result> runs, long winnerKey) {
+        for (final Result run : runs) {
+            if (Math.round(run.recommendedTotal * CENTS_SCALE) == winnerKey) {
+                return run;
+            }
+        }
+        return runs.get(0);
+    }
+
+
+    private static double maxConfidenceAmongWinners(List<Result> runs, long winnerKey) {
+        double maxConf = 0.0;
+        for (final Result run : runs) {
+            if (Math.round(run.recommendedTotal * CENTS_SCALE) == winnerKey
+                    && run.confidence > maxConf) {
+                maxConf = run.confidence;
+            }
+        }
+        return maxConf;
+    }
+
+
+    private static double clampEnsemble(double confidence) {
+        return Math.max(COMBINED_FLOOR, Math.min(ENSEMBLE_MAX, confidence));
+    }
+
+
+    private static void logPerRun(List<Result> runs, Map<Long, double[]> voteBuckets) {
+        for (final Result run : runs) {
+            final long key = Math.round(run.recommendedTotal * CENTS_SCALE);
+            final double[] bucket = voteBuckets.get(key);
+            Logger.i(LOG_TAG, String.format(Locale.US,
+                    "  run: cand=$%.2f  rec=$%.2f  conf=%.2f  votes-for-rec=%d  source=%s",
+                    run.total, run.recommendedTotal, run.confidence, (int) bucket[0], run.recommendedSource));
+        }
+    }
+
+
+    // ============ Helpers ============
+
+    @Nullable
+    private static Double pickOne(List<DetectedNumber> numbers, String keyword) {
+        Double found = null;
+        for (final DetectedNumber detected : numbers) {
+            if (keyword.equals(detected.keyword)) {
+                found = detected.value;
+            }
+        }
+        return found;
     }
 
 
     @Nullable
-    private static DetectedNumber findLineWithValue(List<DetectedNumber> all, double v) {
-        for (DetectedNumber n : all) {
-            if (Math.abs(n.value - v) < 0.005) return n;
+    private static DetectedNumber findLineWithValue(List<DetectedNumber> all, double value) {
+        if (all == null) return null;
+        for (final DetectedNumber detected : all) {
+            if (Math.abs(detected.value - value) < PRICE_DELTA_TOLERANCE) {
+                return detected;
+            }
         }
-
         return null;
     }
 
 
     private static int maxLineIndex(List<DetectedNumber> all) {
-        int m = 0;
-
-        for (DetectedNumber n : all) if (n.lineIndex > m) m = n.lineIndex;
-
-        return m;
+        if (all == null) return 0;
+        int max = 0;
+        for (final DetectedNumber detected : all) {
+            if (detected.lineIndex > max) max = detected.lineIndex;
+        }
+        return max;
     }
 
 
-    private static String fmt(double v) {
-        return String.format(Locale.US, "$%.2f", v);
+    private static String fmt(double value) {
+        return String.format(Locale.US, "$%.2f", value);
     }
 }

@@ -778,12 +778,37 @@ public final class ReceiptParser {
             return null;
         }
 
+        // Category filter: every number on the receipt is classified
+        // into a NumberCategory (TOTAL, SUBTOTAL, TAX, PERCENTAGE,
+        // DATE, PHONE, AUTH_CODE, etc.). Only TOTAL, SUBTOTAL, and
+        // LINE_ITEM are candidates for "the total" — a tax percentage
+        // like 9.25% or a date like 12/25/24 used to win because the
+        // old code picked the largest number with a decimal, which
+        // is exactly the wrong heuristic.
+        final List<DetectedNumber> totalCandidates = new ArrayList<>();
+        for (DetectedNumber candidate : numbers) {
+            final NumberCategory category = candidate.classify();
+            if (category == NumberCategory.TOTAL
+                    || category == NumberCategory.SUBTOTAL
+                    || category == NumberCategory.LINE_ITEM) {
+                totalCandidates.add(candidate);
+            }
+        }
+
+        if (totalCandidates.isEmpty()) {
+            Logger.w("Parser", "pickCircledCandidate: no TOTAL/SUBTOTAL/LINE_ITEM candidates after category filter");
+
+            return null;
+        }
+
+        Logger.i("Parser", "pickCircledCandidate: " + totalCandidates.size()
+                + "/" + numbers.size() + " candidates passed category filter");
 
         // Priority 0: a visually-emphasised number (yellow highlighter
         // or pen circle). This is the strongest "user marked this on
         // purpose" signal we have — the user went out of their way
         // to draw attention to it. Return the highest-emphasis one.
-        final DetectedNumber emphasised = pickMostEmphasised(numbers);
+        final DetectedNumber emphasised = pickMostEmphasised(totalCandidates);
 
         if (emphasised != null) {
             Logger.i("Parser", "pickCircledCandidate: VISUALLY EMPHASISED -> $"
@@ -794,29 +819,49 @@ public final class ReceiptParser {
             return emphasised;
         }
 
+        // Priority 1: a number classified as TOTAL.
+        for (DetectedNumber candidate : totalCandidates) {
+            if (candidate.classify() == NumberCategory.TOTAL) {
+                Logger.i("Parser", "pickCircledCandidate: TOTAL-category match -> $"
+                        + candidate.value + " (line " + candidate.lineIndex
+                        + " kw=" + candidate.keyword + ")");
 
-        // Priority 1: a number on a TOTAL keyword line. Real receipts
-        // almost always print "TOTAL  47.83" with the total number
-        // on the same line, and that's also what a user circles 90%
-        // of the time.
-        for (DetectedNumber candidate : numbers) {
+                return candidate;
+            }
+        }
+
+        // Priority 1b: a number on a legacy TOTAL keyword line (the
+        // keyword field is still used by the parser pass; classify()
+        // would also catch this, but we keep the explicit fast-path
+        // for safety).
+        for (DetectedNumber candidate : totalCandidates) {
             if (candidate.keyword != null && isTotalKeyword(candidate.keyword)) {
-                Logger.i("Parser", "pickCircledCandidate: TOTAL-line match -> $"
+                Logger.i("Parser", "pickCircledCandidate: TOTAL-keyword match -> $"
                         + candidate.value + " (line " + candidate.lineIndex + " kw=" + candidate.keyword + ")");
 
                 return candidate;
             }
         }
 
+        // Priority 2: a number classified as SUBTOTAL.
+        for (DetectedNumber candidate : totalCandidates) {
+            if (candidate.classify() == NumberCategory.SUBTOTAL) {
+                Logger.i("Parser", "pickCircledCandidate: SUBTOTAL-category match -> $"
+                        + candidate.value + " (line " + candidate.lineIndex + ")");
 
-        // Priority 2: the largest number in the bottom half of the
-        // receipt (the totals block lives at the bottom in 99% of
-        // printed receipts). Excludes non-decimal noise like
-        // "TxnID: 348332" by only looking at lines that pass
-        // PriceClassifier (handled in the verifier pass).
+                return candidate;
+            }
+        }
+
+        // Priority 3: the largest amount in the bottom half of the receipt.
+        // The bottom half is where the totals block lives on 99% of printed
+        // receipts. No decimal-vs-integer filter here — the category
+        // classifier has already removed AUTH_CODE/QUANTITY/YEAR for us,
+        // and the IEEE-754 round-trip of $50.00 → 50.0 makes a value-shape
+        // check unreliable (8.00 == 8.0 in Java math).
         int maxLine = 0;
 
-        for (DetectedNumber candidate : numbers) {
+        for (DetectedNumber candidate : totalCandidates) {
             if (candidate.lineIndex > maxLine) maxLine = candidate.lineIndex;
         }
 
@@ -824,9 +869,8 @@ public final class ReceiptParser {
 
         DetectedNumber bottomLargest = null;
 
-        for (DetectedNumber candidate : numbers) {
+        for (DetectedNumber candidate : totalCandidates) {
             if (candidate.lineIndex < halfIndex) continue;
-
             if (bottomLargest == null || candidate.value > bottomLargest.value) {
                 bottomLargest = candidate;
             }
@@ -839,19 +883,34 @@ public final class ReceiptParser {
             return bottomLargest;
         }
 
+        // Priority 4: the largest amount anywhere on the receipt.
+        // Last resort when nothing else qualifies.
+        DetectedNumber largest = null;
 
-        // Priority 3: the largest number on the whole receipt. Last
-        // resort — gives the user a defensible default.
-        DetectedNumber largest = numbers.get(0);
-
-        for (DetectedNumber candidate : numbers) {
-            if (candidate.value > largest.value) largest = candidate;
+        for (DetectedNumber candidate : totalCandidates) {
+            if (largest == null || candidate.value > largest.value) {
+                largest = candidate;
+            }
         }
 
-        Logger.i("Parser", "pickCircledCandidate: receipt-wide largest -> $"
-                + largest.value + " (line " + largest.lineIndex + ")");
+        // Priority 5: absolute largest among total candidates (in case
+        // every candidate is an integer for some reason).
+        if (largest == null) {
+            for (DetectedNumber candidate : totalCandidates) {
+                if (largest == null || candidate.value > largest.value) {
+                    largest = candidate;
+                }
+            }
+        }
 
-        return largest;
+        if (largest != null) {
+            Logger.i("Parser", "pickCircledCandidate: receipt-wide largest -> $"
+                    + largest.value + " (line " + largest.lineIndex + ")");
+
+            return largest;
+        }
+
+        return null;
     }
 
 

@@ -4,6 +4,63 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+- **Delete button unreachable on existing receipts.** The delete
+  button was hidden when an existing receipt was loaded
+  (`loadExistingReceipt` set `btnDelete.setVisibility(View.GONE)`),
+  so the cascade-unmatch + photo-removal path was invisible. Flipped
+  so the button is visible for existing receipts and hidden for new
+  (unsaved) ones, where the back button is the discard.
+- **Auto-pick picked the highest number with a decimal, ignoring
+  category.** A receipt with `Tax  9.25%` and `TOTAL  6.25` would
+  pick 9.25 as the total because the parser stored `$50.00` as
+  `50.0` (integer-shaped) and the value-shape fallbacks misclassified
+  8.00 as a quantity and 50.00 as an auth code. Added a rule-based
+  `NumberCategory` classifier on `DetectedNumber` (TOTAL / SUBTOTAL
+  / LINE_ITEM / TAX / PERCENTAGE / DATE / PHONE / AUTH_CODE /
+  QUANTITY / YEAR / OTHER) that picks one category per number from
+  keyword + value-shape + line-text context. `pickCircledCandidate`
+  now filters the candidate pool to TOTAL / SUBTOTAL / LINE_ITEM
+  before applying the priority-1..5 size heuristics. The 9.25%
+  tax-rate case is now correctly routed to PERCENTAGE, not TOTAL.
+
+### Added
+- **NumberCategory classifier** (`ocr/NumberCategory.java` +
+  `DetectedNumber.classify()`). 12 categories, keyword-driven
+  primary classification, value-shape fallback. The fallback
+  excludes AUTH_CODE/QUANTITY/YEAR when the line text carries a
+  decimal point (so `8.00` doesn't fall into the quantity bucket).
+  PERCENTAGE is checked before TAX so `Tax  9.25%` classifies as a
+  rate, not a money amount.
+- **"Add to budget" button on the edit screen** for existing
+  receipts. Opens a picker of all active budgets; selecting one
+  updates the receipt's `budgetId` and saves. Replaces the
+  previous post-verifier "Add to budget?" prompt which was tied to
+  the verifier flow.
+
+### Removed
+- **TotalVerifier UI surface.** The "Total verification" section
+  (`btn_mark_total`, `tv_verifier` panel, verdict drawable swapped
+  by `applyVerdictBackground`) is gone from `EditReceiptActivity`.
+  The `runVerifier*`, `runSanityCheckBeforeSave`, `showBudgetPrompt`,
+  `applyVerdictBackground`, `buildVerifierBody`, `showRePickToast`,
+  `onMarkTotalClicked`, `autoPickAndVerify`, and `tryExtractWithVisualSignals`
+  methods are deleted. The `TotalVerifier` class itself stays
+  in `match/` for the `TestPipelineActivity` debug screen and
+  for the unit tests; only the edit-screen UI was removed. The
+  reason: Plaid integration isn't on the table for the next
+  release and the verifier was the source of more confusion
+  than it was worth.
+
+### Tests
+- New `DetectedNumberTest` cases covering every category path
+  (TOTAL, SUBTOTAL, TAX, PERCENTAGE, LINE_ITEM, DATE, PHONE,
+  AUTH_CODE, QUANTITY, the round-decimal rescue, and the
+  `mid` → AUTH_CODE false-positive guard).
+- New `ReceiptParserTest` cases covering the 9.25% tax bug,
+  the date-vs-total priority, the year-vs-total priority, and
+  the SUBTOTAL-over-LINE_ITEM fallback.
+
 ## [1.1.1] — 2026-08-12
 
 Patch release. Hotfix for a Room schema-identity mismatch that

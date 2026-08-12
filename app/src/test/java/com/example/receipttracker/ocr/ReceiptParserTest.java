@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 
 class ReceiptParserTest {
@@ -323,5 +324,87 @@ class ReceiptParserTest {
         final DetectedNumber propagated = numbers.get(0);
         assertThat(propagated.value).isEqualTo(12.50);
         assertThat(propagated.keyword).isEqualTo("subtotal");
+    }
+
+
+    // ---------- category filter fix: the 9.25% tax bug ----------
+
+    @Test
+    @DisplayName("pickCircledCandidate picks the TOTAL, not the 9.25% tax percentage")
+    void shouldNotPickTaxPercentageAsTotal() {
+        // The user-reported bug: a $6.25 receipt with a tax line printed as
+        // "Tax  9.25%" was being auto-picked as $9.25 because the old code
+        // picked the largest number with a decimal. The categoriser now
+        // routes the 9.25% value to PERCENTAGE, which is excluded from the
+        // candidate pool.
+        final String text = "Pizza  6.25\n"
+                + "Tax  9.25%\n"
+                + "TOTAL  6.25\n";
+
+        final List<DetectedNumber> numbers = ReceiptParser.extractAllNumbers(text);
+
+        assertThat(numbers)
+                .as("parser should pick up the 6.25 line item, the 9.25% tax, and the 6.25 total")
+                .hasSize(3)
+                .extracting(DetectedNumber::classify)
+                .containsExactlyInAnyOrder(NumberCategory.LINE_ITEM, NumberCategory.PERCENTAGE, NumberCategory.TOTAL);
+
+        final DetectedNumber picked = ReceiptParser.pickCircledCandidate(numbers);
+
+        assertThat(picked).isNotNull();
+        assertThat(picked.value).isEqualTo(6.25);
+        assertThat(picked.classify()).isEqualTo(NumberCategory.TOTAL);
+    }
+
+
+    @Test
+    @DisplayName("pickCircledCandidate ignores a high-value date like 12.25")
+    void shouldNotPickDateAsTotal() {
+        // Regression guard: a date-printed "12.25" should not be picked just
+        // because it has a decimal point.
+        final String text = "Item  3.00\n"
+                + "Date  12.25\n"
+                + "TOTAL  3.00\n";
+
+        final List<DetectedNumber> numbers = ReceiptParser.extractAllNumbers(text);
+
+        final DetectedNumber picked = ReceiptParser.pickCircledCandidate(numbers);
+
+        assertThat(picked).isNotNull();
+        assertThat(picked.value).isEqualTo(3.00);
+    }
+
+
+    @Test
+    @DisplayName("pickCircledCandidate ignores a subtitle line like 2024")
+    void shouldNotPickYearAsTotal() {
+        // Receipt footer with a copyright year and a smaller line item.
+        final String text = "Item  12.50\n"
+                + "TOTAL  12.50\n"
+                + "© 2024\n";
+
+        final List<DetectedNumber> numbers = ReceiptParser.extractAllNumbers(text);
+
+        final DetectedNumber picked = ReceiptParser.pickCircledCandidate(numbers);
+
+        assertThat(picked).isNotNull();
+        assertThat(picked.value).isEqualTo(12.50);
+    }
+
+
+    @Test
+    @DisplayName("pickCircledCandidate prefers SUBTOTAL over LINE_ITEM when no TOTAL keyword is present")
+    void shouldPreferSubtotalOverLineItem() {
+        final String text = "Milk  3.99\n"
+                + "Bread  2.50\n"
+                + "Subtotal  6.49\n";
+
+        final List<DetectedNumber> numbers = ReceiptParser.extractAllNumbers(text);
+
+        final DetectedNumber picked = ReceiptParser.pickCircledCandidate(numbers);
+
+        assertThat(picked).isNotNull();
+        assertThat(picked.value).isEqualTo(6.49);
+        assertThat(picked.classify()).isEqualTo(NumberCategory.SUBTOTAL);
     }
 }

@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-08-12
+
+Patch release. Hotfix for a Room schema-identity mismatch that
+bricked the app on first launch after the v1.1.0 refactor.
+
+### Fixed
+- **Room `IllegalStateException` on every LiveData refresh.** The
+  v1.1.0 refactor added explicit `@Index` declarations on `Receipt`
+  and re-ordered entity fields, which changed the schema identity
+  hash from `2b121208…` to `88e953c8…`. The database `version` was
+  not bumped, so Room refused to open the on-device DB and the
+  exception escaped the `arch_disk_io_*` executor (Room's
+  `fallbackToDestructiveMigration` never fired because the crash
+  happened during a LiveData query, not during the upgrade path).
+  Bumped `version` 2 → 3 in `AppDatabase`. The existing
+  `fallbackToDestructiveMigration` (already approved in the source
+  comment for pre-alpha) now wipes the local DB on first launch
+  after upgrade.
+
+### Added
+- **`scripts/pull-crash-log.ps1`.** Diagnostic helper. Reads
+  `adb logcat -b crash` plus the app's own `filesDir/logs/app.log`
+  via `run-as`, falling back to plain `cat` if `run-as` is blocked
+  (release builds). Prints the AndroidRuntime FATAL stack and the
+  last 80 lines of the in-process `Logger` file in one shot.
+
 ## [1.1.0] — 2026-08-11
 
 Minor release. Pre-alpha — flagged as a pre-release on GitHub. New

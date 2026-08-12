@@ -25,7 +25,13 @@ import androidx.sqlite.db.SupportSQLiteDatabase;
  */
 @Database(
         entities = {Receipt.class, BankTransaction.class, Budget.class},
-        version = 2,
+        // v3: refactor (e309acc) re-ordered the entity annotations and added
+        // explicit @Index declarations on receipts; the schema identity hash
+        // changed even though the on-disk columns are identical. The user
+        // approved fallbackToDestructiveMigration below for pre-alpha, so
+        // upgrading just wipes the local DB. Field manuals to recreate any
+        // receipts you need before reinstalling.
+        version = 3,
         exportSchema = false)
 public abstract class AppDatabase extends RoomDatabase {
 

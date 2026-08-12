@@ -125,6 +125,19 @@
             android:orientation="vertical">
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_repick_total"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:padding="14dp"
+                android:text="Re-pick the total"
+                android:textSize="15sp"
+                android:visibility="gone"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                app:icon="@drawable/ic_verified"
+                app:iconGravity="textStart"
+                app:cornerRadius="16dp" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_add_to_budget"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

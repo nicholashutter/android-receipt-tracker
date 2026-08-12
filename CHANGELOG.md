@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+- **"Re-pick the total" button on the edit screen.** Restored after
+  the v1.2.0 verifier-strip removed it. Opens a picker of every
+  number the OCR saw on the receipt, sorted by category priority
+  (TOTAL → SUBTOTAL → LINE_ITEM → others) and value descending, so
+  the top of the list is the auto-pick recommendation and the bottom
+  is every other number the OCR caught. Numbers the classifier
+  filtered out (TAX, DATE, PERCENTAGE, etc.) are shown with a small
+  "(excluded: ...)" tag so the user can see what was skipped and
+  why. Tapping a row sets the amount field to that value. No
+  verification on top — the user is explicitly picking.
+
+### Removed
+- **Stale `bg_verdict_*` drawables and verdict colors.** The three
+  verdict drawables (`bg_verdict_ok`, `bg_verdict_warn`, `bg_verdict_err`)
+  and six `verdict_*` color resources were no longer referenced after
+  the verifier UI went away in v1.2.0. Deleted.
+- **Stale Tesseract / HandwritingOcr docs and assets.** The
+  `app/src/main/assets/tessdata/` directory and `scripts/fetch_tesseract_eng.sh`
+  were leftover from the deleted `HandwritingOcr` class. The README
+  had a "How handwritten totals are read" section describing the
+  feature as if it existed. Removed.
+
+### Changed
+- **README + docs/improving-the-total-scanner.md.** Updated the
+  pipeline description and feature list to match the v1.2.0 reality:
+  category-based auto-pick replaces the verifier recommendation, the
+  Re-pick picker is the new override path, and the two-stage classifier
+  is now flagged as a test-pipeline-only feature.
+
+## [1.2.0] — 2026-08-12
+
 ### Fixed
 - **Delete button unreachable on existing receipts.** The delete
   button was hidden when an existing receipt was loaded

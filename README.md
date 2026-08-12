@@ -8,21 +8,19 @@ Everything happens on the device — no cloud OCR, no third-party receipt APIs, 
 
 - **Camera capture** of a paper receipt (CameraX, downscales to 1600px on the long edge before saving).
 - **On-device OCR** via Google ML Kit (`com.google.mlkit:text-recognition:16.0.0`). No network round-trip — your receipt never leaves the phone.
-- **Receipt parser** (`ReceiptParser`) that pulls merchant, date, line items, subtotal, tax, tip, total out of the raw OCR text using a hand-tuned heuristic plus regex. On every scan, an auto-pick heuristic (`pickCircledCandidate`) chooses the most likely "circled" number — a visually-emphasised number (yellow highlighter or pen circle) first, then a number on a TOTAL-keyword line, then the largest number in the bottom half of the receipt, then the largest number overall — and the editor pre-fills the amount with the verifier's recommended value. The user can still edit the amount as a correction, or hit "Re-pick" to override.
-- **Two-stage classifier** for cross-checking the marked total:
-  1. **PriceClassifier** — binary logistic regression that drops OCR noise: dates, phone numbers, auth codes, transaction IDs, card numbers, expiration dates, suggested tips, "Version 1.5.20" lines, etc.
-  2. **LinearLearner** (aka TotalLearner) — 11-feature binary logistic regression that, given only the surviving prices, scores each one for P(is the real total) based on `hasTotalKeyword`, `hasComponentKeyword`, `isLargest`, `lineInBottomHalf`, `hasDecimal`, `belowSubtotal`, `closeToSubPlusTax`, `looksLikeDate`, `looksLikeCode`, plus two pixel-level visual-signal features: `highlightScore` (yellow marker fraction) and `circleScore` (pen-circle ring-vs-core ratio).
-- **Visual signal detection.** When the editor opens, it re-runs OCR with bounding boxes and walks the actual pixels inside each number's bbox to score two "the user marked this on purpose" signals: a yellow highlighter swatch and a pen circle drawn around the number. The two scores become `DetectedNumber` fields and feed the stage-2 classifier, so a highlighted or circled number wins the auto-pick and the verifier outright.
-- **10-run ensemble verifier.** Instead of trusting a single verify() pass, the editor runs the full pipeline against the top-10 candidates ranked by P(isTotal) and votes on `recommendedTotal`. The ensemble confidence blends the max per-run confidence, the average per-run confidence, and the vote share, so a 9/10 vote with a strong run lands near 0.92 confidence.
-- **Entered-vs-circled cross-check + sub+tax sanity check.** When the user marks a number AND types an amount, the verifier runs the classifier on both, compares them to the heuristic `subtotal+tax+tip` prediction, and picks the winner via 3-way majority vote. The "source" of the recommendation (`circled`, `entered`, `model-best`, `sanity-wins`, `model+sanity`) is surfaced in the UI.
+- **Receipt parser** (`ReceiptParser`) that pulls merchant, date, line items, subtotal, tax, tip, total out of the raw OCR text using a hand-tuned heuristic plus regex. On every scan, an auto-pick heuristic (`pickCircledCandidate`) chooses the most likely "circled" number — a visually-emphasised number (yellow highlighter or pen circle) first, then a number on a TOTAL-keyword line, then the largest number in the bottom half of the receipt, then the largest number overall — and the editor pre-fills the amount with that value. The user can still edit the amount as a correction, or hit "Re-pick the total" to pick a different number from the full list of candidates ranked by category (TOTAL → SUBTOTAL → LINE_ITEM + every other number the OCR saw, with a small "(excluded: ...)" tag on the ones the auto-pick filtered out).
+- **Visual signal detection.** When the editor opens, it re-runs OCR with bounding boxes and walks the actual pixels inside each number's bbox to score two "the user marked this on purpose" signals: a yellow highlighter swatch and a pen circle drawn around the number. The two scores become `DetectedNumber` fields, so a highlighted or circled number wins the auto-pick.
+- **Category-based auto-pick.** Each OCR-detected number is classified by `NumberCategory.classify()` into one of 12 categories (TOTAL, SUBTOTAL, LINE_ITEM, TAX, PERCENTAGE, DATE, PHONE, AUTH_CODE, QUANTITY, YEAR, OTHER) using a keyword + value-shape + line-text rule. The auto-pick restricts the candidate pool to TOTAL/SUBTOTAL/LINE_ITEM, then walks the four priorities (visually-emphasised, TOTAL-keyword line, bottom-half largest, largest overall). The user can override any time via "Re-pick the total".
+- **Two-stage classifier (diagnostic dump).** `PriceClassifier` (10 features, binary logistic regression) drops OCR noise, then `LinearLearner` (11 features) scores each surviving price for P(is the real total). The classifier pipeline runs in the `TestPipelineActivity` debug screen and in unit tests, but is not invoked by the editor UI. See `TotalVerifier` for the legacy pipeline that combines the two stages with a 10-run ensemble, sub+tax sanity check, and entered-vs-circled cross-check; the class is still in the codebase for the test pipeline.
 - **Merchant auto-categorisation.** A JSON-backed classifier (`MerchantClassifier` + `app/src/main/assets/merchants.json`, ~100 common US merchants) canonicalises the parsed merchant line — "WHOLE FOODS MARKET #12345" / "WFM" / "WHOLE FOODS" all collapse to "Whole Foods Market" with a category. The editor uses the canonical name when the prediction confidence clears 0.40; below that, the user's edit is left alone.
 - **Manual bank-transaction entry** (no Plaid/CSV/OFX) plus an automatic matcher that suggests pairings between entered transactions and saved receipts.
 - **Running budgets (multiple named, exactly one active).** Create as many budgets
   as you want ("Groceries August", "Travel", "Coffee"), each with a cap. The
-  active budget shows up on the main screen as a live progress card. When you
-  save a receipt with a verified total, a one-tap dialog adds it to the active
-  budget (or skip / choose a different one). Soft-delete a budget to remove it
-  from the list without losing the linked receipts.
+  active budget shows up on the main screen as a live progress card. Any
+  existing receipt can be attached to a budget via the "Add to budget" button
+  on the edit screen — useful for budgets created after a receipt was already
+  in the system. Soft-delete a budget to remove it from the list without
+  losing the linked receipts.
 - **Soft-delete receipts (recoverable).** "Clear all" hides every receipt from
   the list without deleting the files. Toggle "Show deleted" in the receipt
   list menu to see them, tap one to restore or permanently delete.
@@ -69,19 +67,12 @@ CameraX capture
                            │    (handles OCR reading "Subtotal\n44.50" as "44.50\nSubtotal")
                            └─► ParsedReceipt { merchant, date, amount, merchantPrediction }
                                 └─► EditReceiptActivity
-                                     │  • re-OCR with bounding boxes
-                                     │  • VisualSignalDetector per DetectedNumber
-                                     │    → highlightScore + circleScore
-                                     │  • ReceiptParser.pickCircledCandidate
-                                     │    Priority 0: visually-emphasised, then TOTAL line,
-                                     │    then bottom-half largest, then largest overall
-                                     │  • TotalVerifier.verifyEnsemble(top-10 by P(isTotal))
-                                     │    → votes on recommendedTotal, blends confidence
+                                     │  • Re-pick the total (picker over all OCR numbers,
+                                     │    sorted by category + value desc) if the auto-pick
+                                     │    picked the wrong number
                                      │  • user can edit merchant/date/amount
-                                     │  • "Re-pick the total" override (single verify())
                                      │  • user taps Save
-                                     │    → runSanityCheckBeforeSave() runs TotalVerifier again
-                                     │      with current entered amount, then writes to Room
+                                     │    → writes to Room
                                      └─► Room (ReceiptDao)
                                           └─► ReceiptExporter
                                                └─► /sdcard/Documents/ReceiptTracker/export/receipt_<id>_<date>.json + .jpg
@@ -156,19 +147,13 @@ Combined:  0.10  ->  recommended 34.56 (circled (sanity wins))
 
 ### How the auto-pick works
 
-On a fresh scan, `EditReceiptActivity` re-runs OCR against the saved photo (with bounding boxes) and asks `VisualSignalDetector` to score every detected number's bounding box for a yellow highlighter swatch and a pen circle. `ReceiptParser.pickCircledCandidate` then walks four priorities in order: visually-emphasised, TOTAL-keyword line, largest in the bottom half, largest overall. The chosen number is the seed for `TotalVerifier.verifyEnsemble()`, which runs the full verify pipeline against the top 10 candidates by `P(isTotal)` and votes on the final `recommendedTotal` — the value with the most votes wins, and the ensemble confidence blends the strongest per-run confidence, the average per-run confidence, and the vote share. The user sees the verdict panel with the full reasoning and can still edit the amount or tap "Re-pick the total" to choose a different number from the list. If the photo can't be decoded or structured OCR fails, the auto-pick falls back to text-only number extraction and a single-pass verify, so a missing visual signal just downgrades the algorithm rather than blocking it.
+On a fresh scan, `EditReceiptActivity` runs `ReceiptParser.extractAllNumbers(rawText)` to find every number on the receipt, paired with the line text and a propagated keyword ("subtotal", "tax", "total", etc.). Each `DetectedNumber` is then classified by `NumberCategory.classify()` into one of 12 categories based on a keyword + value-shape + line-text mix (a rule-based check, no ML). The auto-pick filter restricts the candidate pool to `TOTAL`, `SUBTOTAL`, and `LINE_ITEM` — tax percentages, dates, phone numbers, auth codes, etc. are excluded. `pickCircledCandidate` then walks four priorities in order: visually-emphasised (yellow highlighter or pen circle), TOTAL-keyword line, bottom-half largest, largest overall. The chosen number pre-fills the amount field. The user can still edit the amount or tap "Re-pick the total" to choose a different number from the full list — sorted by category priority, with excluded (TAX / DATE / PERCENTAGE / etc.) candidates shown at the bottom with a small "(excluded: ...)" tag.
+
+> **Note:** the `TotalVerifier` class (10-run ensemble, sub+tax sanity check, entered-vs-circled cross-check) is still in `match/` for the test pipeline and unit tests, but the edit-screen UI no longer runs it. Plaid integration isn't on the roadmap for the next release, and the verdict panel was the source of more confusion than it was worth. The two classifier stages (`PriceClassifier`, `LinearLearner`) are still used by `TestPipelineActivity` for diagnostic dumps.
 
 ### How the merchant guess works
 
 `ReceiptParser.guessMerchant` produces a raw guess (first non-junk caps line) and `MerchantClassifier.predict(raw)` canonicalises it against `app/src/main/assets/merchants.json` — a curated list of about 100 common US merchants with case-insensitive aliases (e.g. "WHOLE FOODS" / "WFM" / "Whole Foods Market" all match "Whole Foods Market"). The classifier scores each entry by `weight × best_alias_match`, where whole-string alias matches score 1.0 and token-substring matches score a hit/total ratio, and returns the top match with a [0,1] confidence. `EditReceiptActivity` uses the canonical name when the confidence clears 0.40 and leaves the parsed string alone below that threshold, so noisy or unfamiliar merchants don't get rewritten into something wrong. Adding a new merchant is a JSON edit, not a code change.
-
-### How handwritten totals are read
-
-ML Kit's print-optimised Latin recognizer gets handwritten digits wrong, so the standard "user wrote a tip in pen, circled it" case fails the first OCR pass. `HandwritingOcr` (Tesseract 4 LSTM) handles that: for every number that `VisualSignalDetector` flags as marked, the parser re-recognises the same bbox with Tesseract. If Tesseract finds a value, the parser's `DetectedNumber.value` field is set to the Tesseract result and the auto-pick, the verifier, the verdict panel, and the user's amount field all see the right number.
-
-To enable: drop `eng.traineddata` (~22 MB) into `app/src/main/assets/tessdata/`. The file isn't bundled (would dominate git history) — fetch it with `bash scripts/fetch_tesseract_eng.sh` (or `… fast` / `… best` for size/accuracy tradeoffs). Without it, the pipeline falls back to ML Kit's number for marked bboxes; the visual signals still work, the user can still see and override, we just trust ML Kit rather than Tesseract.
-
-`LinearLearner` carries a 12th feature, `isHandwritten` (0 or 1), so a hand-written digit the user pointed at is the highest-trust "this is the total" signal the model produces.
 
 ## Project layout
 
@@ -188,14 +173,14 @@ androidscanner/
 │       │   ├── match/
 │       │   │   ├── LogisticRegression.java    # shared train() / predict() / sigmoid()
 │       │   │   ├── PriceClassifier.java       # stage 1: is this a price?
-│       │   │   ├── LinearLearner.java         # stage 2: is this the total? (12 features incl. isHandwritten)
-│       │   │   └── TotalVerifier.java         # combines both + cross-check + sanity + ensemble
+│       │   │   ├── LinearLearner.java         # stage 2: is this the total? (11 features)
+│       │   │   └── TotalVerifier.java         # combines both + cross-check + sanity + ensemble (test pipeline only)
 │       │   ├── ocr/
 │       │   │   ├── ReceiptOcr.java            # ML Kit wrapper; recognizeText + recognizeWithBoxes
 │       │   │   ├── ReceiptParser.java         # merchant/date/line items/numbers; pickCircledCandidate
-│       │   │   ├── DetectedNumber.java        # POJO { value, line, lineIndex, keyword, hl, cr, bbox, handwritingValue }
+│       │   │   ├── DetectedNumber.java        # POJO + NumberCategory.classify()
+│       │   │   ├── NumberCategory.java        # 12 categories: TOTAL, SUBTOTAL, LINE_ITEM, TAX, PERCENTAGE, ...
 │       │   │   ├── VisualSignalDetector.java  # yellow-highlight + pen-circle pixel scoring
-│       │   │   ├── HandwritingOcr.java       # Tesseract 4 LSTM wrapper for re-OCR of marked bboxes
 │       │   │   ├── MerchantClassifier.java    # JSON-backed canonical-name + category guess
 │       │   │   ├── ParsedReceipt.java
 │       │   │   └── ReceiptImageStore.java     # JPEG write + sampled decode

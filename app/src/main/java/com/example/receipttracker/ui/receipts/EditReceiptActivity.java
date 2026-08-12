@@ -58,6 +58,8 @@ import com.google.android.material.textfield.TextInputEditText;
 
 import java.io.File;
 
+import java.util.ArrayList;
+
 import java.util.Calendar;
 
 import java.util.List;
@@ -99,6 +101,8 @@ public class EditReceiptActivity extends AppCompatActivity {
     private MaterialButton btnDelete;
 
     private MaterialButton btnAddToBudget;
+
+    private MaterialButton btnRePickTotal;
 
 
     private long existingId = -1;
@@ -171,6 +175,8 @@ public class EditReceiptActivity extends AppCompatActivity {
         btnDelete = findViewById(R.id.btn_delete);
 
         btnAddToBudget = findViewById(R.id.btn_add_to_budget);
+
+        btnRePickTotal = findViewById(R.id.btn_repick_total);
     }
 
 
@@ -244,6 +250,10 @@ public class EditReceiptActivity extends AppCompatActivity {
 
         if (rawText != null && !rawText.isEmpty()) {
             tvRawText.setText(rawText);
+
+            // Show the Re-pick button when OCR text is on hand so the
+            // user can override the auto-pick without re-typing.
+            btnRePickTotal.setVisibility(View.VISIBLE);
         }
 
 
@@ -271,6 +281,8 @@ public class EditReceiptActivity extends AppCompatActivity {
         });
 
         btnAddToBudget.setOnClickListener(v -> showAddToBudgetDialog());
+
+        btnRePickTotal.setOnClickListener(v -> showRePickDialog());
     }
 
 
@@ -538,6 +550,116 @@ public class EditReceiptActivity extends AppCompatActivity {
         if (!validate()) return;
 
         saveReceiptInternal();
+    }
+
+
+    /**
+     * Shows a picker of every number the OCR detected on the receipt,
+     * sorted by category priority (TOTAL → SUBTOTAL → LINE_ITEM →
+     * other) and value descending. The top of the list is the auto-pick
+     * recommendation; the bottom is "everything else the OCR saw".
+     * Numbers the classifier filtered out (TAX, DATE, PERCENTAGE, etc.)
+     * are shown with a small "(excluded)" tag so the user can see what
+     * was skipped and why.
+     *
+     * <p>Tapping a row sets the amount field to that value. No
+     * verification, no verdict panel — the user is explicitly picking
+     * the number they want, so we just honor the choice.</p>
+     */
+    private void showRePickDialog() {
+        if (rawText == null || rawText.isEmpty()) {
+            Toast.makeText(this, "No OCR text on this receipt", Toast.LENGTH_SHORT).show();
+
+            return;
+        }
+
+        final List<DetectedNumber> numbers = ReceiptParser.extractAllNumbers(rawText);
+
+        if (numbers.isEmpty()) {
+            Toast.makeText(this, "Parser found no numbers", Toast.LENGTH_SHORT).show();
+
+            return;
+        }
+
+        // Sort by category priority (lowest number = highest priority),
+        // then value descending. The comparator intentionally keeps
+        // "excluded" categories after the candidates so the user sees
+        // the sensible picks first.
+        final List<DetectedNumber> sorted = new ArrayList<>(numbers);
+
+        sorted.sort((a, b) -> {
+            final int priorityA = rePickCategoryPriority(a.classify());
+            final int priorityB = rePickCategoryPriority(b.classify());
+
+            if (priorityA != priorityB) return Integer.compare(priorityA, priorityB);
+
+            return Double.compare(b.value, a.value);
+        });
+
+        final String[] labels = new String[sorted.size()];
+        final double[] values = new double[sorted.size()];
+
+        for (int index = 0; index < sorted.size(); index++) {
+            final DetectedNumber number = sorted.get(index);
+
+            values[index] = number.value;
+
+            final String keywordSuffix;
+            if (number.keyword == null) {
+                keywordSuffix = "";
+            } else {
+                keywordSuffix = "  •  " + number.keyword.toUpperCase();
+            }
+
+            final NumberCategory category = number.classify();
+
+            final String excludedTag;
+            if (isExcludedCategory(category)) {
+                excludedTag = "  (excluded: " + category.name().toLowerCase() + ")";
+            } else {
+                excludedTag = "";
+            }
+
+            labels[index] = String.format(Locale.US, "$%.2f%s  [%s]  •  line %d%s",
+                    number.value, keywordSuffix, category.name(), number.lineIndex, excludedTag);
+        }
+
+        Logger.i("Edit", "showRePickDialog: " + labels.length + " numbers (raw size=" + numbers.size() + ")");
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.action_pick_total)
+                .setItems(labels, (dialog, which) -> {
+                    final double picked = values[which];
+
+                    Logger.i("Edit", "Re-pick: chose $" + picked);
+
+                    etAmount.setText(String.format(Locale.US, "%.2f", picked));
+
+                    dialog.dismiss();
+                })
+                .setNegativeButton(android.R.string.cancel, (dialog, which) -> dialog.dismiss())
+                .show();
+    }
+
+
+    /**
+     * Lower priority number = more likely to be the receipt total.
+     * Categories the auto-pick already picks from get 0..2; "excluded"
+     * categories get a higher priority so they sink to the bottom of
+     * the picker.
+     */
+    private static int rePickCategoryPriority(NumberCategory category) {
+        if (category == NumberCategory.TOTAL) return 0;
+        if (category == NumberCategory.SUBTOTAL) return 1;
+        if (category == NumberCategory.LINE_ITEM) return 2;
+        return 3;
+    }
+
+
+    private static boolean isExcludedCategory(NumberCategory category) {
+        return category != NumberCategory.TOTAL
+                && category != NumberCategory.SUBTOTAL
+                && category != NumberCategory.LINE_ITEM;
     }
 
 

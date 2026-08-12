@@ -11,17 +11,13 @@
 A typical receipt scan goes through:
 
 1. **Capture** — CameraX → a JPEG on disk.
-2. **OCR** — `ReceiptOcr.recognizeWithBoxes(bitmap)` runs ML Kit Latin text recognition on-device and emits `OcrLine` / `OcrElement` records (line text + per-element bounding boxes). Tesseract4Android is wired in as a handwritten-digit fallback but the trained data file is not bundled (see `app/build.gradle:85-92`).
+2. **OCR** — `ReceiptOcr.recognizeWithBoxes(bitmap)` runs ML Kit Latin text recognition on-device and emits `OcrLine` / `OcrElement` records (line text + per-element bounding boxes).
 3. **Number extraction** — `ReceiptParser.extractAllNumbersWithVisualSignals(bitmap, lines)` walks the structured OCR, pairs each money-shaped match to the OCR element whose text contains it, and runs `VisualSignalDetector.detect(bitmap, bbox)` on that element's bounding box to get a yellow-highlighter score and a pen-circle score.
-4. **Two-stage classifier** — each detected number goes through:
-   - **Stage 1** — `PriceClassifier` (logistic regression, 10 features): is this number actually a price, or noise (date, phone, auth code, quantity, year, noise keyword)?
-   - **Stage 2** — `LinearLearner` (logistic regression, 11 features): is this price the receipt total?
-5. **Ensemble** — `TotalVerifier.verifyEnsemble` runs 10 ensemble passes and reports vote count and consensus confidence.
-6. **Auto-pick** — `ReceiptParser.pickCircledCandidate` falls back through visual emphasis → TOTAL-keyword line → bottom-half largest → whole-receipt largest.
-7. **Heuristic sanity check** — if sub+tax+tip are present, the verifier compares the candidate to their sum and breaks ties.
-8. **UI** — `EditReceiptActivity` renders the verdict panel and lets the user re-pick or accept.
+4. **Category classification** — each detected number is routed through `NumberCategory.classify()` (12 categories: TOTAL, SUBTOTAL, LINE_ITEM, TAX, TIP, DISCOUNT, PERCENTAGE, DATE, PHONE, AUTH_CODE, QUANTITY, YEAR, OTHER). Rule-based: keyword + value-shape + line-text matches. Excludes PERCENTAGE / DATE / PHONE / AUTH_CODE / etc. from the auto-pick candidate pool.
+5. **Auto-pick** — `ReceiptParser.pickCircledCandidate` falls back through visual emphasis → TOTAL-keyword line → bottom-half largest → whole-receipt largest, restricted to TOTAL/SUBTOTAL/LINE_ITEM candidates.
+6. **UI** — `EditReceiptActivity` pre-fills the amount with the auto-pick value and lets the user re-pick from the full list (sorted by category + value desc) or type a manual override.
 
-Models are trained once at class-init via `LogisticRegression.train` against ~30 synthetic examples. They live in static `volatile` fields, retrained on every cold start. No persistence, no online learning, no calibration.
+The two-stage classifier (`PriceClassifier` + `LinearLearner`) and the `TotalVerifier` ensemble are still in `match/` for the `TestPipelineActivity` debug screen and unit tests, but the editor doesn't invoke them. The previous "re-pick dialog" was a verifier-driven flow; the new one is a straightforward pick-list with no verification on top.
 
 ---
 
@@ -32,7 +28,6 @@ These are real findings, not speculation — surfaced by code review and the new
 - **`ReceiptParser.tryParseDate` is broken for month-name dates** — the case logic for both `"5 Jan 2024"` and `"Jan 5, 2024"` throws on `Integer.parseInt("Jan")`; two tests in `ReceiptParserTest` are `@Disabled` to document this. (`app/src/main/java/com/example/receipttracker/ocr/ReceiptParser.java:tryParseDate`)
 - **"Ensemble" is deterministic** — `LogisticRegression.trainOneEpoch` rotates training data by `hyperParams.epochs % trainingData.size()` per epoch, so re-running the model gives the same result. The 10 ensemble runs are not a real ensemble. (`app/src/main/java/com/example/receipttracker/match/LogisticRegression.java:119`)
 - **Visual signals use a hand-rolled pixel ratio** — `VisualSignalDetector` is a yellow-hue + dark-ring heuristic with hard-coded thresholds (R≥0.78, G≥0.70, B≤0.40, dark luma ≤0.35, ring-margin 0.30). It misfires on logo text, watermark paper, and any partial circle that doesn't match the ring-vs-core ratio. (`app/src/main/java/com/example/receipttracker/ocr/VisualSignalDetector.java:51-76`)
-- **Tesseract4Android is half-wired** — referenced in `app/build.gradle:85-92`, the `eng.traineddata` file is described as "drop it into `app/src/main/assets/tessdata/`" but the directory doesn't exist. `scripts/fetch_tesseract_eng.sh` does exist (good), but the runtime path is untested.
 - **No confidence calibration** — sigmoid outputs are reported as "confidence" but they are not calibrated probabilities. "70% confidence" doesn't mean "we're right 70% of the time."
 - **Tiny training set** — `PriceClassifier.TRAINING_DATA` has ~30 examples, `LinearLearner.TRAINING_DATA` has ~20. Each visual-signal example exists at most twice.
 - **No online learning** — every user re-pick (the "Re-pick" dialog in `EditReceiptActivity`) is thrown away after the form is saved. The most valuable training signal in the app.

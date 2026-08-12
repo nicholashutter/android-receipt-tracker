@@ -10,8 +10,8 @@ android {
         applicationId "com.example.receipttracker"
         minSdk 26
         targetSdk 34
-        versionCode 5
-        versionName "1.2.0"
+        versionCode 6
+        versionName "1.2.1"
 
         // ML Kit standalone text recognition ships the model as an "installable
         // component archive" so the model is available offline from first launch.

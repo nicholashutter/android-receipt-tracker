@@ -69,14 +69,6 @@
     <color name="outline">#FFCBD5E1</color>            <!-- slate-300 -->
     <color name="outline_variant">#FFE2E8F0</color>    <!-- slate-200 -->
 
-    <!-- ============ Verdict panel (the cross-check card) ============ -->
-    <color name="verdict_ok_bg">#FFECFDF5</color>      <!-- emerald-50 -->
-    <color name="verdict_ok_border">#FFA7F3D0</color> <!-- emerald-200 -->
-    <color name="verdict_warn_bg">#FFFFFBEB</color>    <!-- amber-50 -->
-    <color name="verdict_warn_border">#FFFDE68A</color> <!-- amber-200 -->
-    <color name="verdict_err_bg">#FFFEF2F2</color>     <!-- red-50 -->
-    <color name="verdict_err_border">#FFFECACA</color>  <!-- red-200 -->
-
     <!-- ============ Gradient stops (the hero header) ============ -->
     <color name="hero_start">#FF0EA5E9</color>         <!-- sky-500 -->
     <color name="hero_mid">#FF8B5CF6</color>           <!-- violet-500 -->

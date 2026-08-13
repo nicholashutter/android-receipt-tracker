@@ -58,7 +58,8 @@ import java.util.List;
 /**
  * Detail view for a single budget: name, cap, live running spent
  * amount, progress bar, set-active toggle, edit, and a list of
- * linked receipts.
+ * linked receipts. Parents additionally show a sub-budgets section
+ * with per-child progress bars and an "Add sub-budget" button.
  */
 public class BudgetDetailActivity extends AppCompatActivity {
 
@@ -73,6 +74,7 @@ public class BudgetDetailActivity extends AppCompatActivity {
     private static final String STATUS_MATCHED = "matched";
     private static final String ACTIVE_BUDGET_LABEL = "Active budget";
     private static final String SET_AS_ACTIVE_LABEL = "Set as active budget";
+    private static final long NO_PARENT = -1L;
 
 
     private long budgetId;
@@ -91,14 +93,15 @@ public class BudgetDetailActivity extends AppCompatActivity {
     private MaterialButton setActiveButton;
     private MaterialButton editButton;
     private MaterialButton deleteButton;
+    private MaterialButton addSubBudgetButton;
     private RecyclerView receiptsRecyclerView;
+    private RecyclerView subBudgetsRecyclerView;
+    private TextView subBudgetsHeader;
+    private TextView subBudgetsEmptyView;
     private LinkedReceiptsAdapter receiptsAdapter;
+    private SubBudgetsAdapter subBudgetsAdapter;
 
-
-    // MUTABLE: re-set by LiveData observer.
     private Budget currentBudget;
-
-    // MUTABLE: re-set by LiveData observer.
     private double currentSpent = 0.0;
 
 
@@ -129,11 +132,19 @@ public class BudgetDetailActivity extends AppCompatActivity {
         setActiveButton = findViewById(R.id.btn_set_active);
         editButton = findViewById(R.id.btn_edit);
         deleteButton = findViewById(R.id.btn_delete);
+        addSubBudgetButton = findViewById(R.id.btn_add_sub_budget);
+        subBudgetsHeader = findViewById(R.id.tv_sub_budgets_header);
+        subBudgetsEmptyView = findViewById(R.id.tv_sub_budgets_empty);
         receiptsRecyclerView = findViewById(R.id.rv_receipts);
+        subBudgetsRecyclerView = findViewById(R.id.rv_sub_budgets);
 
         receiptsRecyclerView.setLayoutManager(new LinearLayoutManager(this));
         receiptsAdapter = new LinkedReceiptsAdapter();
         receiptsRecyclerView.setAdapter(receiptsAdapter);
+
+        subBudgetsRecyclerView.setLayoutManager(new LinearLayoutManager(this));
+        subBudgetsAdapter = new SubBudgetsAdapter();
+        subBudgetsRecyclerView.setAdapter(subBudgetsAdapter);
 
         budgetDao.getByIdLive(budgetId).observe(this, budget -> {
             if (budget == null) {
@@ -144,35 +155,70 @@ public class BudgetDetailActivity extends AppCompatActivity {
             renderBudget();
         });
 
-        budgetDao.sumSpentLive(budgetId).observe(this, rawSpent -> {
-            final double spent;
-            if (rawSpent == null) {
-                spent = 0.0;
+        // For parent budgets, the "Spent" headline rolls up the parent
+        // + every child. For sub-budgets, it's just the receipts
+        // attached to this row. We re-route based on the row type below.
+
+        budgetDao.getByIdLive(budgetId).observe(this, budget -> {
+            if (budget == null) return;
+
+            if (budget.isParent()) {
+                budgetDao.sumSpentWithChildrenLive(budgetId).observe(this, rawSpent -> {
+                    final double spent;
+                    if (rawSpent == null) {
+                        spent = 0.0;
+                    } else {
+                        spent = rawSpent;
+                    }
+                    currentSpent = spent;
+                    renderAmounts();
+                });
             } else {
-                spent = rawSpent;
+                budgetDao.sumSpentLive(budgetId).observe(this, rawSpent -> {
+                    final double spent;
+                    if (rawSpent == null) {
+                        spent = 0.0;
+                    } else {
+                        spent = rawSpent;
+                    }
+                    currentSpent = spent;
+                    renderAmounts();
+                });
             }
-            currentSpent = spent;
-            renderAmounts();
         });
 
         receiptDao.getByBudgetLive(budgetId).observe(this, receipts -> {
             receiptsAdapter.set(receipts);
             final boolean isListEmpty = receipts == null || receipts.isEmpty();
-            if (isListEmpty) {
-                noReceiptsView.setVisibility(View.VISIBLE);
+            noReceiptsView.setVisibility(isListEmpty ? View.VISIBLE : View.GONE);
+            receiptsRecyclerView.setVisibility(isListEmpty ? View.GONE : View.VISIBLE);
+        });
+
+        budgetDao.getChildrenLive(budgetId).observe(this, children -> {
+            subBudgetsAdapter.set(children);
+            final boolean isParent = currentBudget != null && currentBudget.isParent();
+            final boolean hasChildren = children != null && !children.isEmpty();
+
+            // Sub-budgets section is only meaningful on parents.
+            if (isParent) {
+                subBudgetsHeader.setVisibility(View.VISIBLE);
+                addSubBudgetButton.setVisibility(View.VISIBLE);
+                subBudgetsRecyclerView.setVisibility(hasChildren ? View.VISIBLE : View.GONE);
+                subBudgetsEmptyView.setVisibility(hasChildren ? View.GONE : View.VISIBLE);
             } else {
-                noReceiptsView.setVisibility(View.GONE);
+                subBudgetsHeader.setVisibility(View.GONE);
+                addSubBudgetButton.setVisibility(View.GONE);
+                subBudgetsRecyclerView.setVisibility(View.GONE);
+                subBudgetsEmptyView.setVisibility(View.GONE);
             }
-            if (isListEmpty) {
-                receiptsRecyclerView.setVisibility(View.GONE);
-            } else {
-                receiptsRecyclerView.setVisibility(View.VISIBLE);
-            }
+
+            Logger.i(TAG, "sub-budgets observer: parent=" + isParent + " count=" + (children == null ? 0 : children.size()));
         });
 
         setActiveButton.setOnClickListener(clickedView -> markCurrentActive());
         editButton.setOnClickListener(clickedView -> showEditDialog());
         deleteButton.setOnClickListener(clickedView -> showDeleteDialog());
+        addSubBudgetButton.setOnClickListener(clickedView -> showCreateSubBudgetDialog());
     }
 
 
@@ -245,6 +291,12 @@ public class BudgetDetailActivity extends AppCompatActivity {
         final TextView etMax = dialogView.findViewById(R.id.et_max);
         final android.widget.CheckBox cbActive = dialogView.findViewById(R.id.cb_set_active);
 
+        // In the edit dialog, the parent picker is hidden — reparenting
+        // is a separate operation (delete + recreate).
+        dialogView.findViewById(R.id.spinner_parent).setVisibility(View.GONE);
+        dialogView.findViewById(R.id.lbl_parent).setVisibility(View.GONE);
+        dialogView.findViewById(R.id.tv_parent_explainer).setVisibility(View.GONE);
+
         etName.setText(currentBudget.name);
         etMax.setText(String.valueOf(currentBudget.maxAmount));
         cbActive.setChecked(currentBudget.isActive);
@@ -289,9 +341,50 @@ public class BudgetDetailActivity extends AppCompatActivity {
     }
 
 
+    /**
+     * Open the create-sub-budget dialog, pre-selecting the current
+     * budget as the parent. The dialog is shared with the list
+     * screen's create flow.
+     */
+    private void showCreateSubBudgetDialog() {
+        if (currentBudget == null) return;
+
+        new AlertDialog.Builder(this)
+                .setTitle("New sub-budget under " + currentBudget.name)
+                .setMessage("Use this to break a parent budget into slices (e.g. 'Memphis' and 'Non-Memphis' under 'Travel').")
+                .setPositiveButton("Continue", (dialogInterface, which) -> {
+                    launchBudgetListCreateDialogWithParent(currentBudget.id);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+
+    /**
+     * The shared create dialog lives in BudgetListActivity. To reuse
+     * it, we pop the create-bottom-sheet-style flow by navigating
+     * there with the parent ID encoded in an Intent extra. For
+     * simplicity (and because the list is just one tap from the main
+     * screen), we open the list activity with a "create under parent"
+     * hint and let the user walk through the list dialog. The bottom
+     * line: the user lands on the standard dialog with the parent
+     * picker pre-selected.
+     */
+    private void launchBudgetListCreateDialogWithParent(long parentId) {
+        final Intent intent = new Intent(this, BudgetListActivity.class);
+        intent.putExtra(BudgetListActivity.EXTRA_CREATE_UNDER_PARENT, parentId);
+        startActivity(intent);
+    }
+
+
     private void showDeleteDialog() {
         if (currentBudget == null) return;
-        final String message = "'" + currentBudget.name + "' will be removed. Linked receipts will be unlinked but kept.";
+        final String message;
+        if (currentBudget.isParent()) {
+            message = "'" + currentBudget.name + "' and its sub-budgets will be removed. Linked receipts on all of them will be unlinked but kept.";
+        } else {
+            message = "'" + currentBudget.name + "' will be removed. Linked receipts will be unlinked but kept.";
+        }
         new AlertDialog.Builder(this)
                 .setTitle("Delete budget?")
                 .setMessage(message)
@@ -299,93 +392,194 @@ public class BudgetDetailActivity extends AppCompatActivity {
                 .setPositiveButton("Delete", (dialogInterface, which) -> {
                     final long idToDelete = currentBudget.id;
                     executors.diskIO().execute(() -> {
+                        if (currentBudget.isParent()) {
+                            final List<Budget> children = budgetDao.getChildren(idToDelete);
+                            for (Budget child : children) {
+                                receiptDao.clearBudgetOnReceipts(child.id);
+                            }
+                        }
                         receiptDao.clearBudgetOnReceipts(idToDelete);
                         budgetDao.softDelete(idToDelete);
                         Logger.i(TAG, "Soft-deleted budget id=" + idToDelete);
+                        finish();
                     });
-                    finish();
                 })
                 .show();
     }
 
 
-    // ============ adapter for linked receipts ============
+    // ============ sub-budgets adapter ============
 
-    class LinkedReceiptsAdapter extends RecyclerView.Adapter<LinkedReceiptsAdapter.ReceiptViewHolder> {
+    /**
+     * One row per sub-budget. Each row shows the name, the spent /
+     * cap, and a progress bar. Tapping the row opens this activity
+     * for the child (so the user can drill into a sub-budget).
+     */
+    class SubBudgetsAdapter extends RecyclerView.Adapter<SubBudgetsAdapter.SubBudgetViewHolder> {
 
-        // MUTABLE: re-set in set().
-        private List<Receipt> data = Collections.emptyList();
+        private List<Budget> data = Collections.emptyList();
 
+        private final java.util.Map<Long, Double> spentByChild = new java.util.HashMap<>();
 
-        void set(List<Receipt> newData) {
+        void set(List<Budget> newData) {
             if (newData == null) {
                 this.data = Collections.emptyList();
             } else {
                 this.data = newData;
             }
             notifyDataSetChanged();
+            refreshSpent();
         }
 
-
-        @NonNull
-        @Override
-        public ReceiptViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            final View inflatedView = LayoutInflater.from(parent.getContext())
-                    .inflate(R.layout.item_receipt, parent, false);
-            return new ReceiptViewHolder(inflatedView);
-        }
-
-
-        @Override
-        public void onBindViewHolder(@NonNull ReceiptViewHolder holder, int position) {
-            final Receipt receipt = data.get(position);
-
-            final String merchantText;
-            if (receipt.merchant == null || receipt.merchant.isEmpty()) {
-                merchantText = PLACEHOLDER_NO_MERCHANT;
-            } else {
-                merchantText = receipt.merchant;
-            }
-            holder.merchant.setText(merchantText);
-            holder.date.setText(MoneyUtils.formatDate(receipt.dateMillis));
-            holder.amount.setText(MoneyUtils.format(receipt.amount));
-
-            final String statusText;
-            if (receipt.matchGroupId == null) {
-                statusText = STATUS_UNMATCHED;
-            } else {
-                statusText = STATUS_MATCHED;
-            }
-            holder.status.setText(statusText);
-            holder.status.setBackgroundResource(R.drawable.bg_chip_money);
-            holder.status.setTextColor(getColor(R.color.on_warning_container));
-
-            holder.itemView.setOnClickListener(clickedView -> {
-                final Intent editIntent = new Intent(BudgetDetailActivity.this, EditReceiptActivity.class);
-                editIntent.putExtra(EditReceiptActivity.EXTRA_RECEIPT_ID, receipt.id);
-                startActivity(editIntent);
+        private void refreshSpent() {
+            executors.diskIO().execute(() -> {
+                final java.util.Map<Long, Double> next = new java.util.HashMap<>();
+                for (Budget child : data) {
+                    next.put(child.id, budgetDao.sumSpent(child.id));
+                }
+                runOnUiThread(() -> {
+                    spentByChild.clear();
+                    spentByChild.putAll(next);
+                    notifyDataSetChanged();
+                });
             });
         }
 
+        @NonNull
+        @Override
+        public SubBudgetViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            final View itemView = LayoutInflater.from(parent.getContext())
+                    .inflate(R.layout.item_budget_sub, parent, false);
+            return new SubBudgetViewHolder(itemView);
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull SubBudgetViewHolder holder, int position) {
+            final Budget child = data.get(position);
+            final double spent = spentByChild.getOrDefault(child.id, 0.0);
+
+            holder.name.setText(child.name);
+
+            final String amountsLine = String.format("%s / %s",
+                    MoneyUtils.format(spent), MoneyUtils.format(child.maxAmount));
+            holder.amounts.setText(amountsLine);
+
+            final int progressPct;
+            if (child.maxAmount > 0.0) {
+                final double rawPercent = spent * 100.0 / child.maxAmount;
+                final double clampedPercent = Math.min(PROGRESS_PERCENT_MAX, Math.round(rawPercent));
+                progressPct = (int) clampedPercent;
+            } else {
+                progressPct = 0;
+            }
+            holder.progress.setProgress(progressPct);
+            holder.status.setText(progressPct + "% used");
+
+            holder.itemView.setOnClickListener(clickedView -> {
+                final Intent intent = new Intent(BudgetDetailActivity.this, BudgetDetailActivity.class);
+                intent.putExtra(BudgetDetailActivity.EXTRA_BUDGET_ID, child.id);
+                startActivity(intent);
+            });
+        }
 
         @Override
         public int getItemCount() {
             return data.size();
         }
 
+        class SubBudgetViewHolder extends RecyclerView.ViewHolder {
+            final TextView name;
+            final TextView amounts;
+            final TextView status;
+            final android.widget.ProgressBar progress;
+
+            SubBudgetViewHolder(View itemView) {
+                super(itemView);
+                name = itemView.findViewById(R.id.tv_name);
+                amounts = itemView.findViewById(R.id.tv_amounts);
+                status = itemView.findViewById(R.id.tv_status);
+                progress = itemView.findViewById(R.id.pb_budget);
+            }
+        }
+    }
+
+
+    // ============ linked receipts adapter ============
+
+    /**
+     * Reads the receipts whose {@code budgetId} matches this row and
+     * renders them in a flat list. Tap a row to open the receipt in
+     * the editor.
+     */
+    class LinkedReceiptsAdapter extends RecyclerView.Adapter<LinkedReceiptsAdapter.ReceiptViewHolder> {
+
+        private List<Receipt> data = Collections.emptyList();
+
+        void set(List<Receipt> newData) {
+            if (newData == null) this.data = Collections.emptyList();
+            else this.data = newData;
+            notifyDataSetChanged();
+        }
+
+        @NonNull
+        @Override
+        public ReceiptViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            final View itemView = LayoutInflater.from(parent.getContext())
+                    .inflate(R.layout.item_receipt, parent, false);
+            return new ReceiptViewHolder(itemView);
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull ReceiptViewHolder holder, int position) {
+            final Receipt receipt = data.get(position);
+
+            final String merchant;
+            if (receipt.merchant == null || receipt.merchant.isEmpty()) {
+                merchant = PLACEHOLDER_NO_MERCHANT;
+            } else {
+                merchant = receipt.merchant;
+            }
+
+            holder.merchant.setText(merchant);
+
+            final String amount = MoneyUtils.format(receipt.amount);
+            holder.amount.setText(amount);
+
+            final String date = MoneyUtils.formatDate(receipt.dateMillis);
+            holder.date.setText(date);
+
+            final String status;
+            if (receipt.matchGroupId == null) {
+                status = STATUS_UNMATCHED;
+            } else {
+                status = STATUS_MATCHED;
+            }
+            holder.status.setText(status);
+
+            holder.itemView.setOnClickListener(clickedView -> {
+                final Intent intent = new Intent(BudgetDetailActivity.this, EditReceiptActivity.class);
+                intent.putExtra(EditReceiptActivity.EXTRA_RECEIPT_ID, receipt.id);
+                startActivity(intent);
+            });
+        }
+
+        @Override
+        public int getItemCount() {
+            return data.size();
+        }
 
         class ReceiptViewHolder extends RecyclerView.ViewHolder {
             final TextView merchant;
+            final TextView amount;
             final TextView date;
             final TextView status;
-            final TextView amount;
 
             ReceiptViewHolder(View itemView) {
                 super(itemView);
                 merchant = itemView.findViewById(R.id.tv_merchant);
+                amount = itemView.findViewById(R.id.tv_amount);
                 date = itemView.findViewById(R.id.tv_date);
                 status = itemView.findViewById(R.id.tv_status);
-                amount = itemView.findViewById(R.id.tv_amount);
             }
         }
     }

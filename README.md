@@ -15,12 +15,15 @@ Everything happens on the device — no cloud OCR, no third-party receipt APIs, 
 - **Two-stage classifier (diagnostic dump).** `PriceClassifier` (10 features, binary logistic regression) drops OCR noise, then `LinearLearner` (11 features) scores each surviving price for P(is the real total). The classifier pipeline runs in the `TestPipelineActivity` debug screen and in unit tests, but is not invoked by the editor UI. See `TotalVerifier` for the legacy pipeline that combines the two stages with a 10-run ensemble, sub+tax sanity check, and entered-vs-circled cross-check; the class is still in the codebase for the test pipeline.
 - **Merchant auto-categorisation.** A JSON-backed classifier (`MerchantClassifier` + `app/src/main/assets/merchants.json`, ~100 common US merchants) canonicalises the parsed merchant line — "WHOLE FOODS MARKET #12345" / "WFM" / "WHOLE FOODS" all collapse to "Whole Foods Market" with a category. The editor uses the canonical name when the prediction confidence clears 0.40; below that, the user's edit is left alone.
 - **Manual bank-transaction entry** (no Plaid/CSV/OFX) plus an automatic matcher that suggests pairings between entered transactions and saved receipts.
-- **Running budgets (multiple named, exactly one active).** Create as many budgets
-  as you want ("Groceries August", "Travel", "Coffee"), each with a cap. The
-  active budget shows up on the main screen as a live progress card. Any
-  existing receipt can be attached to a budget via the "Add to budget" button
-  on the edit screen — useful for budgets created after a receipt was already
-  in the system. Soft-delete a budget to remove it from the list without
+- **Running budgets (parent + sub-budgets).** Top-level "parent" budgets
+  can have any number of "sub-budget" leaves (e.g. a "Travel" parent
+  with "Memphis" and "Non-Memphis" children). Receipts attach to a
+  leaf; the parent's "Spent" headline rolls up to the children. The
+  active budget is always a parent — the main-screen card shows
+  that parent's roll-up total. Any existing receipt can be attached
+  to a budget via the "Add to budget" button on the edit screen —
+  useful for budgets created after a receipt was already in the
+  system. Soft-delete a budget to remove it from the list without
   losing the linked receipts.
 - **Soft-delete receipts (recoverable).** "Clear all" hides every receipt from
   the list without deleting the files. Toggle "Show deleted" in the receipt

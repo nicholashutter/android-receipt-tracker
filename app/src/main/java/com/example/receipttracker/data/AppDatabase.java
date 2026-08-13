@@ -31,7 +31,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase;
         // approved fallbackToDestructiveMigration below for pre-alpha, so
         // upgrading just wipes the local DB. Field manuals to recreate any
         // receipts you need before reinstalling.
-        version = 3,
+        // v4: parent/child budget hierarchy. Adds nullable parentId column
+        // and a parentId index on the budgets table. NULL parentId = top-
+        // level parent budget; non-null = sub-budget / leaf. All existing
+        // v3 budgets become top-level parents (NULL parentId).
+        version = 4,
         exportSchema = false)
 public abstract class AppDatabase extends RoomDatabase {
 
@@ -85,6 +89,26 @@ public abstract class AppDatabase extends RoomDatabase {
         }
     };
 
+    /**
+     * v3 -> v4: add the {@code parentId} column to {@code budgets} so a
+     * budget can be a top-level parent (NULL) or a sub-budget (non-null
+     * pointing at the parent). Adds an index on parentId for the "list
+     * children of this parent" query. Existing rows default to NULL
+     * parentId, which keeps them as top-level parents — no semantics
+     * change for any data written before v4.
+     */
+    static final Migration MIGRATION_3_4 = new Migration(3, 4) {
+        @Override
+        public void migrate(@NonNull SupportSQLiteDatabase database) {
+            final String addParentId = "ALTER TABLE `budgets` ADD COLUMN `parentId` INTEGER";
+            database.execSQL(addParentId);
+
+            final String createParentIdIndex = "CREATE INDEX IF NOT EXISTS `index_budgets_parentId` "
+                    + "ON `budgets` (`parentId`)";
+            database.execSQL(createParentIdIndex);
+        }
+    };
+
 
     public static AppDatabase get(Context context) {
         if (instance == null) {
@@ -94,7 +118,7 @@ public abstract class AppDatabase extends RoomDatabase {
                                     context.getApplicationContext(),
                                     AppDatabase.class,
                                     DATABASE_NAME)
-                            .addMigrations(MIGRATION_1_2)
+                            .addMigrations(MIGRATION_1_2, MIGRATION_3_4)
                             // Last-resort: if a future version can't migrate,
                             // wipe rather than crash. Pre-alpha, so OK.
                             .fallbackToDestructiveMigration()

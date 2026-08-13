@@ -1,48 +1,85 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical"
-    android:paddingHorizontal="20dp"
-    android:paddingTop="8dp"
-    android:paddingBottom="8dp">
+    android:fillViewport="false">
 
-    <com.google.android.material.textfield.TextInputLayout
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="Name (e.g. Groceries)"
-        app:boxBackgroundMode="outline"
-        style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
+        android:orientation="vertical"
+        android:paddingHorizontal="20dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
 
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/et_name"
+        <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:inputType="textCapWords" />
-    </com.google.android.material.textfield.TextInputLayout>
+            android:hint="Name (e.g. Groceries, Memphis)"
+            app:boxBackgroundMode="outline"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
 
-    <com.google.android.material.textfield.TextInputLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:hint="Max amount (cap)"
-        app:boxBackgroundMode="outline"
-        app:startIconDrawable="@drawable/ic_money"
-        style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/et_name"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textCapWords" />
+        </com.google.android.material.textfield.TextInputLayout>
 
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/et_max"
+        <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:inputType="numberDecimal" />
-    </com.google.android.material.textfield.TextInputLayout>
+            android:layout_marginTop="12dp"
+            android:hint="Max amount (cap)"
+            app:boxBackgroundMode="outline"
+            app:startIconDrawable="@drawable/ic_money"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
 
-    <CheckBox
-        android:id="@+id/cb_set_active"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:checked="true"
-        android:text="Make this the active budget" />
-</LinearLayout>
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/et_max"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="numberDecimal" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <!-- Parent picker. "Top-level" = parent budget; otherwise this is a
+             sub-budget under the selected parent. Hidden when the dialog is
+             editing an existing budget (no reparenting from the edit dialog). -->
+        <TextView
+            android:id="@+id/lbl_parent"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="Parent budget"
+            android:textColor="@color/on_surface_variant"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.08" />
+
+        <Spinner
+            android:id="@+id/spinner_parent"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/bg_action_card"
+            android:padding="8dp" />
+
+        <TextView
+            android:id="@+id/tv_parent_explainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Top-level budgets roll up spent from their sub-budgets. Sub-budgets roll up to their parent."
+            android:textColor="@color/on_surface_variant"
+            android:textSize="11sp" />
+
+        <CheckBox
+            android:id="@+id/cb_set_active"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:checked="true"
+            android:text="Make this the active budget" />
+    </LinearLayout>
+</ScrollView>

@@ -70,6 +70,35 @@ public interface BudgetDao {
     void restore(long id);
 
 
+    // ---------- hierarchy queries ----------
+
+    /**
+     * All top-level parent budgets (parentId IS NULL), excluding soft-deleted.
+     * Used by the budget-list screen and the editor's "Add to budget" picker.
+     */
+    @Query("SELECT * FROM budgets WHERE parentId IS NULL AND isDeleted = 0 "
+            + "ORDER BY createdAt DESC")
+    LiveData<List<Budget>> getAllParentsLive();
+
+
+    @Query("SELECT * FROM budgets WHERE parentId IS NULL AND isDeleted = 0 "
+            + "ORDER BY createdAt DESC")
+    List<Budget> getAllParents();
+
+
+    /** Sub-budgets (children) of a parent, excluding soft-deleted. */
+    @Query("SELECT * FROM budgets WHERE parentId = :parentId AND isDeleted = 0 "
+            + "ORDER BY createdAt ASC")
+    LiveData<List<Budget>> getChildrenLive(long parentId);
+
+
+    @Query("SELECT * FROM budgets WHERE parentId = :parentId AND isDeleted = 0 "
+            + "ORDER BY createdAt ASC")
+    List<Budget> getChildren(long parentId);
+
+
+    // ---------- spent sums ----------
+
     /**
      * Sum of receipt amounts linked to a budget, excluding soft-deleted
      * receipts. Returns 0.0 if the budget has no linked receipts.
@@ -82,4 +111,24 @@ public interface BudgetDao {
     @Query("SELECT COALESCE(SUM(amount), 0) FROM receipts "
             + "WHERE budgetId = :budgetId AND deletedAt IS NULL")
     double sumSpent(long budgetId);
+
+
+    /**
+     * Sum of receipt amounts across the parent itself plus every leaf
+     * descendant. This is what shows on the parent's "Spent" headline.
+     * The hierarchy is at most one level deep — a parent has sub-budgets,
+     * sub-budgets do not have their own sub-budgets.
+     */
+    @Query("SELECT COALESCE(SUM(amount), 0) FROM receipts "
+            + "WHERE (budgetId = :parentId OR budgetId IN ("
+            + "  SELECT id FROM budgets WHERE parentId = :parentId AND isDeleted = 0"
+            + ")) AND deletedAt IS NULL")
+    LiveData<Double> sumSpentWithChildrenLive(long parentId);
+
+
+    @Query("SELECT COALESCE(SUM(amount), 0) FROM receipts "
+            + "WHERE (budgetId = :parentId OR budgetId IN ("
+            + "  SELECT id FROM budgets WHERE parentId = :parentId AND isDeleted = 0"
+            + ")) AND deletedAt IS NULL")
+    double sumSpentWithChildren(long parentId);
 }

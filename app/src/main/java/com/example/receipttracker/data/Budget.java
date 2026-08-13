@@ -2,6 +2,7 @@ package com.example.receipttracker.data;
 
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.room.Entity;
 import androidx.room.Ignore;
 import androidx.room.Index;
@@ -14,8 +15,18 @@ import androidx.room.PrimaryKey;
  * linked receipts (filtering soft-deleted ones) - we don't store it
  * denormalized because that drifts on every edit/delete.
  *
- * <p>Exactly one budget is "active" at a time (isActive=1). When a receipt's
- * total is verified, it auto-links to the active budget.</p>
+ * <p>Hierarchical budgets: a budget with {@code parentId == null} is a
+ * top-level "parent" budget; a budget with {@code parentId != null} is a
+ * sub-budget / leaf. Receipts can only be attached to a leaf sub-budget
+ * (the user picks which sub-budget a receipt belongs to). The parent's
+ * spent is the sum of its own spend plus the spend of every leaf
+ * descendant; the parent's {@code maxAmount} is the total cap the
+ * children roll up to.</p>
+ *
+ * <p>Exactly one parent budget is "active" at a time (isActive=1). Sub-
+ * budgets are never directly active. The active parent is the one shown
+ * on the main screen and is the one the editor's "Add to budget" picker
+ * lists the children of.</p>
  *
  * <p>Immutable: every mutation goes through a {@code with*} method that
  * returns a new instance with the requested field replaced. The {@code id}
@@ -27,7 +38,10 @@ import androidx.room.PrimaryKey;
         indices = {
                 // isActive is queried as "the one active row" so an index makes
                 // that lookup O(1) instead of a full scan.
-                @Index(value = "isActive")
+                @Index(value = "isActive"),
+                // parentId is queried as "the children of this parent" for the
+                // sub-budget list and the parent/child roll-up sums.
+                @Index(value = "parentId")
         }
 )
 public final class Budget {
@@ -36,7 +50,7 @@ public final class Budget {
     public final long id;
 
 
-    /** Display name, e.g. "Groceries August". */
+    /** Display name, e.g. "Groceries August" or "Memphis". */
     @NonNull
     public final String name;
 
@@ -48,7 +62,7 @@ public final class Budget {
     public final long createdAt;
 
 
-    /** Exactly one budget should have isActive=1. Enforced in BudgetDao. */
+    /** Exactly one parent budget should have isActive=1. Enforced in BudgetDao. */
     public final boolean isActive;
 
 
@@ -56,10 +70,26 @@ public final class Budget {
     public final boolean isDeleted;
 
 
-    /** Convenience constructor for the "create new budget" flow. */
+    /**
+     * Foreign key to the parent budget's {@link #id}. {@code null} means
+     * this is a top-level (parent) budget; non-null means it's a
+     * sub-budget / leaf under that parent.
+     */
+    @Nullable
+    public final Long parentId;
+
+
+    /** Convenience constructor for the "create new parent budget" flow. */
     @Ignore
     public Budget(@NonNull final String name, final double maxAmount) {
-        this(0L, name, maxAmount, System.currentTimeMillis(), false, false);
+        this(0L, name, maxAmount, System.currentTimeMillis(), false, false, null);
+    }
+
+
+    /** Convenience constructor for the "create new sub-budget" flow. */
+    @Ignore
+    public Budget(final long parentId, @NonNull final String name, final double maxAmount) {
+        this(0L, name, maxAmount, System.currentTimeMillis(), false, false, parentId);
     }
 
 
@@ -69,13 +99,25 @@ public final class Budget {
             final double maxAmount,
             final long createdAt,
             final boolean isActive,
-            final boolean isDeleted) {
+            final boolean isDeleted,
+            @Nullable final Long parentId) {
         this.id = id;
         this.name = name;
         this.maxAmount = maxAmount;
         this.createdAt = createdAt;
         this.isActive = isActive;
         this.isDeleted = isDeleted;
+        this.parentId = parentId;
+    }
+
+
+    /**
+     * True if this budget is a top-level parent (no parent of its own).
+     * The active budget is always a parent; sub-budgets ({@link #parentId}
+     * non-null) are leaves.
+     */
+    public boolean isParent() {
+        return parentId == null;
     }
 
 
@@ -83,7 +125,7 @@ public final class Budget {
         if (newName.equals(this.name)) {
             return this;
         }
-        return new Budget(id, newName, maxAmount, createdAt, isActive, isDeleted);
+        return new Budget(id, newName, maxAmount, createdAt, isActive, isDeleted, parentId);
     }
 
 
@@ -91,7 +133,7 @@ public final class Budget {
         if (newMaxAmount == this.maxAmount) {
             return this;
         }
-        return new Budget(id, name, newMaxAmount, createdAt, isActive, isDeleted);
+        return new Budget(id, name, newMaxAmount, createdAt, isActive, isDeleted, parentId);
     }
 
 
@@ -99,7 +141,7 @@ public final class Budget {
         if (newIsActive == this.isActive) {
             return this;
         }
-        return new Budget(id, name, maxAmount, createdAt, newIsActive, isDeleted);
+        return new Budget(id, name, maxAmount, createdAt, newIsActive, isDeleted, parentId);
     }
 
 
@@ -107,7 +149,15 @@ public final class Budget {
         if (newIsDeleted == this.isDeleted) {
             return this;
         }
-        return new Budget(id, name, maxAmount, createdAt, isActive, newIsDeleted);
+        return new Budget(id, name, maxAmount, createdAt, isActive, newIsDeleted, parentId);
+    }
+
+
+    public Budget withParentId(@Nullable final Long newParentId) {
+        if (newParentId == null ? parentId == null : newParentId.equals(parentId)) {
+            return this;
+        }
+        return new Budget(id, name, maxAmount, createdAt, isActive, isDeleted, newParentId);
     }
 
 
@@ -115,6 +165,7 @@ public final class Budget {
     @Override
     public String toString() {
         return "Budget{id=" + id + ", name='" + name + "', max=" + maxAmount
-                + ", active=" + isActive + ", deleted=" + isDeleted + "}";
+                + ", active=" + isActive + ", deleted=" + isDeleted
+                + ", parentId=" + parentId + "}";
     }
 }

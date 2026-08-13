@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Added
+- **Parent / child budget hierarchy.** A budget can now be a
+  top-level "parent" (default, NULL `parentId`) or a "sub-budget" /
+  leaf (non-null `parentId` pointing at the parent). Use case: a
+  "Travel" parent with a "Memphis" and "Non-Memphis" sub-budget
+  whose receipt amounts roll up to the parent's "Spent" headline.
+  - **Schema** — `Budget.parentId` (nullable Long, indexed). New
+    `MIGRATION_3_4` adds the column + index; existing v3 budgets
+    default to NULL parentId (top-level). DB version bumped to 4.
+  - **New DAO queries** — `getAllParentsLive`, `getAllParents`,
+    `getChildrenLive(parentId)`, `getChildren(parentId)`,
+    `sumSpentWithChildrenLive(parentId)`,
+    `sumSpentWithChildren(parentId)`. The roll-up sums use a single
+    SQL `OR budgetId IN (SELECT id FROM budgets WHERE parentId = …
+    AND isDeleted = 0)` so the parent's headline always reflects
+    the children.
+  - **BudgetListActivity** — flat list sectioned by parent. Each
+    parent row is full-width; sub-budgets indent below it with a
+    vertical guide bar. Long-press menu on a parent adds "Add
+    sub-budget" alongside the existing Edit / Delete / Set-active.
+  - **BudgetDetailActivity** — when the row is a parent, a
+    "Sub-budgets" section appears between the progress card and
+    the linked-receipts list, with one row per child (name, cap,
+    progress bar) and an "Add sub-budget" button. Deleting a parent
+    also unlinks receipts on its children.
+  - **EditReceiptActivity picker** — the "Add to budget" picker
+    shows parents with their children indented below. Parent rows
+    are non-pickable (toast if tapped) — receipts must attach to a
+    leaf so the roll-up sum is correct. Parents with no children
+    are themselves pickable.
+  - **Main screen active-budget card** — uses
+    `sumSpentWithChildrenLive` so the headline shows the total
+    across the parent's children when applicable.
+  - **Tests** — `BudgetTest` covers the new `parentId` field,
+    `withParentId`, `isParent()`, and the three-arg convenience
+    constructor for sub-budgets.
 - **"Create receipt" wrapper entry point.** New
   `CreateReceiptActivity` lives on the main screen as a card under
   the existing "Scan a receipt" hero. Three big action cards:

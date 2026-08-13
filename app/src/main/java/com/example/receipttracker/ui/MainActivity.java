@@ -218,8 +218,16 @@ public class MainActivity extends AppCompatActivity {
         }
         activeBudgetNameView.setText(activeBudget.name);
 
-        // Live observed query for the spent amount.
-        budgetDao.sumSpentLive(activeBudget.id).observe(this, rawSpent -> {
+        // Live observed query for the spent amount. For a parent
+        // budget, the headline shows the roll-up (parent + every leaf
+        // descendant). For a sub-budget the user shouldn't normally
+        // see this card (sub-budgets can't be active), but the plain
+        // sumSpentLive is the safe fallback if it ever happens.
+        final androidx.lifecycle.LiveData<Double> spentLive = activeBudget.isParent()
+                ? budgetDao.sumSpentWithChildrenLive(activeBudget.id)
+                : budgetDao.sumSpentLive(activeBudget.id);
+
+        spentLive.observe(this, rawSpent -> {
             final double spent;
             if (rawSpent == null) {
                 spent = 0.0;

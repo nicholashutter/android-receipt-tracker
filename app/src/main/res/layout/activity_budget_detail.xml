@@ -124,6 +124,53 @@
                 app:backgroundTint="@color/budget"
                 app:cornerRadius="16dp" />
 
+            <!-- Sub-budgets section (parents only) -->
+            <TextView
+                android:id="@+id/tv_sub_budgets_header"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="28dp"
+                android:layout_marginBottom="8dp"
+                android:text="Sub-budgets"
+                android:textColor="@color/on_surface"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.08"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/tv_sub_budgets_empty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_action_card"
+                android:padding="20dp"
+                android:gravity="center"
+                android:text="No sub-budgets yet. Break this budget into slices (e.g. 'Memphis' and 'Non-Memphis' under 'Travel') so each rolls up to this total."
+                android:textColor="@color/on_surface_variant"
+                android:textSize="13sp"
+                android:lineSpacingMultiplier="1.3"
+                android:visibility="gone" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/rv_sub_budgets"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:nestedScrollingEnabled="false"
+                android:visibility="gone" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_add_sub_budget"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:padding="14dp"
+                android:text="Add sub-budget"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                app:icon="@drawable/ic_add"
+                app:iconGravity="textStart"
+                app:cornerRadius="16dp"
+                android:visibility="gone" />
+
             <!-- Linked receipts header -->
             <TextView
                 android:layout_width="wrap_content"

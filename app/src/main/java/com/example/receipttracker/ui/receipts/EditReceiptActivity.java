@@ -31,6 +31,8 @@ import com.example.receipttracker.data.BankTransaction;
 
 import com.example.receipttracker.data.Budget;
 
+import com.example.receipttracker.data.BudgetDao;
+
 import com.example.receipttracker.data.Receipt;
 
 import com.example.receipttracker.data.ReceiptDao;
@@ -554,6 +556,25 @@ public class EditReceiptActivity extends AppCompatActivity {
 
 
     /**
+     * DTO row for {@link #showAddToBudgetDialog()}. A row is either a
+     * pickable leaf (sub-budget, or parent with no children) or a
+     * non-pickable parent header row that just announces the sub-budgets
+     * coming below.
+     */
+    private static final class PickerRow {
+        final String label;
+        final long budgetId;
+        final boolean isLeaf;
+
+        PickerRow(String label, long budgetId, boolean isLeaf) {
+            this.label = label;
+            this.budgetId = budgetId;
+            this.isLeaf = isLeaf;
+        }
+    }
+
+
+    /**
      * Shows a picker of every number the OCR detected on the receipt,
      * sorted by category priority (TOTAL → SUBTOTAL → LINE_ITEM →
      * other) and value descending. The top of the list is the auto-pick
@@ -668,32 +689,74 @@ public class EditReceiptActivity extends AppCompatActivity {
      * receipt to one. Used for existing receipts via the "Add to budget"
      * button (the button only appears for existing receipts — see
      * {@link #loadExistingReceipt}).
+     *
+     * <p>Hierarchy-aware: parent budgets with no sub-budgets are the
+     * valid "leaf" pick. Parent budgets WITH sub-budgets roll up
+     * their children's spend, so the receipt must attach to a child
+     * — tapping a parent row in that case opens an info dialog
+     * explaining the hierarchy.</p>
      */
     private void showAddToBudgetDialog() {
         exec.diskIO().execute(() -> {
-            final List<Budget> allBudgets = AppDatabase.get(EditReceiptActivity.this)
-                    .budgetDao().getAllActive();
+            final BudgetDao dao = AppDatabase.get(EditReceiptActivity.this).budgetDao();
+
+            final List<Budget> parents = dao.getAllParents();
+
+            // For each parent, fetch children. Build a flat list of
+            // (label, targetBudgetId, isLeaf) tuples.
+            final List<PickerRow> rows = new ArrayList<>();
+
+            final List<Budget> noChildParents = new ArrayList<>();
+
+            for (Budget parent : parents) {
+                final List<Budget> children = dao.getChildren(parent.id);
+
+                if (children == null || children.isEmpty()) {
+                    noChildParents.add(parent);
+                } else {
+                    // Parent row (non-pickable, info only).
+                    rows.add(new PickerRow(parent.name + "  (parent — pick a sub-budget below)",
+                            parent.id, false));
+
+                    for (Budget child : children) {
+                        rows.add(new PickerRow("    • " + child.name + " — " + MoneyUtils.format(child.maxAmount) + " cap",
+                                child.id, true));
+                    }
+                }
+            }
+
+            for (Budget parent : noChildParents) {
+                rows.add(new PickerRow(parent.name + " — " + MoneyUtils.format(parent.maxAmount) + " cap",
+                        parent.id, true));
+            }
 
             runOnUiThread(() -> {
-                if (allBudgets == null || allBudgets.isEmpty()) {
+                if (rows.isEmpty()) {
                     Toast.makeText(this, "No budgets available. Create one first.", Toast.LENGTH_SHORT).show();
 
                     return;
                 }
 
-                final String[] labels = new String[allBudgets.size()];
+                final String[] labels = new String[rows.size()];
 
-                for (int index = 0; index < allBudgets.size(); index++) {
-                    final Budget budget = allBudgets.get(index);
-
-                    labels[index] = String.format(Locale.US, "%s — %s cap",
-                            budget.name, MoneyUtils.format(budget.maxAmount));
+                for (int index = 0; index < rows.size(); index++) {
+                    labels[index] = rows.get(index).label;
                 }
 
                 new AlertDialog.Builder(this)
                         .setTitle("Add to budget")
                         .setItems(labels, (dialog, which) -> {
-                            pendingBudgetId = allBudgets.get(which).id;
+                            final PickerRow picked = rows.get(which);
+
+                            if (!picked.isLeaf) {
+                                Toast.makeText(this,
+                                        "Pick a sub-budget of '" + picked.label.split("  ")[0] + "' to add this receipt to.",
+                                        Toast.LENGTH_LONG).show();
+
+                                return;
+                            }
+
+                            pendingBudgetId = picked.budgetId;
 
                             Logger.i("Edit", "Add to budget: chose id=" + pendingBudgetId);
 

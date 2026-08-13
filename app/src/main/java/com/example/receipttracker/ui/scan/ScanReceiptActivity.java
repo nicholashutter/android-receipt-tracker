@@ -94,6 +94,13 @@ public class ScanReceiptActivity extends AppCompatActivity {
     private static final String LABEL_RETAKE = "Retake";
     private static final String IMAGE_MIME = "image/*";
 
+    // Optional entry-point mode set by CreateReceiptActivity. When
+    // "gallery", the gallery picker is auto-launched on open. "camera"
+    // (or absent) keeps the existing camera-first behaviour.
+    private static final String EXTRA_START_MODE = "start_mode";
+    private static final String MODE_CAMERA = "camera";
+    private static final String MODE_GALLERY = "gallery";
+
     private PreviewView previewView;
     private ImageView capturedView;
     private TextView hintView;
@@ -152,6 +159,22 @@ public class ScanReceiptActivity extends AppCompatActivity {
             Logger.i(TAG, "btn_pick_gallery clicked");
             pickImageLauncher.launch(IMAGE_MIME);
         });
+
+        // Optional entry-point mode: CreateReceiptActivity sets
+        // EXTRA_START_MODE to "gallery" so the user lands on the
+        // picker immediately when they pick "Pick from gallery"
+        // in the create wrapper. Camera (the default) keeps the
+        // existing behaviour.
+        final Intent launchIntent = getIntent();
+        final String startMode = (launchIntent == null) ? MODE_CAMERA : launchIntent.getStringExtra(EXTRA_START_MODE);
+
+        if (MODE_GALLERY.equals(startMode)) {
+            Logger.i(TAG, "startMode=gallery; auto-launching gallery picker");
+
+            pickImageLauncher.launch(IMAGE_MIME);
+
+            return;
+        }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED) {

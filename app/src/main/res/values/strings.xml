@@ -6,6 +6,9 @@
     <string name="main_title">Receipt Tracker</string>
     <string name="main_subtitle">Scan receipts, log bank charges, see what matches.</string>
     <string name="action_scan_receipt">Scan a receipt</string>
+    <string name="action_create_receipt">Create receipt</string>
+    <string name="create_receipt_subtitle">Hand receipt, online order, or anything in between</string>
+    <string name="create_receipt_title">Create receipt</string>
     <string name="action_view_receipts">My receipts (%1$d)</string>
     <string name="action_add_transaction">Add bank transaction</string>
     <string name="action_view_transactions">My transactions (%1$d)</string>

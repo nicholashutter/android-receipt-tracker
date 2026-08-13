@@ -37,6 +37,7 @@ import com.example.receipttracker.ui.export.ExportActivity;
 
 import com.example.receipttracker.ui.match.MatchActivity;
 
+import com.example.receipttracker.ui.receipts.CreateReceiptActivity;
 import com.example.receipttracker.ui.receipts.ReceiptListActivity;
 
 import com.example.receipttracker.ui.scan.ScanReceiptActivity;
@@ -92,6 +93,7 @@ public class MainActivity extends AppCompatActivity {
         activeBudgetCard = findViewById(R.id.card_active_budget);
 
         wirePrimaryAction(R.id.btn_scan, ScanReceiptActivity.class);
+        wirePrimaryAction(R.id.btn_create_receipt, CreateReceiptActivity.class);
         wireReceiptsListPills();
         wireSecondaryCards();
         wireActiveBudgetCard();

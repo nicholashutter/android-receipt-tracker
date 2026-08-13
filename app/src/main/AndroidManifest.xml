@@ -43,6 +43,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".ui.receipts.CreateReceiptActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ui.transactions.AddTransactionActivity"
             android:exported="false" />
 

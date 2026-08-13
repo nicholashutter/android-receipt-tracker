@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Added
+- **"Create receipt" wrapper entry point.** New
+  `CreateReceiptActivity` lives on the main screen as a card under
+  the existing "Scan a receipt" hero. Three big action cards:
+  - **Type the details** — hand receipt, online order, no photo.
+    Opens `EditReceiptActivity` with no extras; the editor starts
+    empty and the user types everything. The OCR-driven auto-pick
+    and Re-pick picker are hidden because there's no raw text.
+  - **Take a photo** — opens `ScanReceiptActivity` in camera mode
+    (the existing camera-greedy flow).
+  - **Pick from gallery** — opens `ScanReceiptActivity` in gallery
+    mode (auto-launches the gallery picker).
+  All three converge to the same `EditReceiptActivity`, so the
+  downstream behaviour (validation, save, budget linking, delete) is
+  identical regardless of how the user started.
+- **`ScanReceiptActivity.EXTRA_START_MODE` ("start_mode").** Optional
+  intent extra that lets a caller preselect camera ("camera") or
+  gallery ("gallery"). Default is camera, which preserves the existing
+  behaviour for any callers that pass no extra.
 - **"Re-pick the total" button on the edit screen.** Restored after
   the v1.2.0 verifier-strip removed it. Opens a picker of every
   number the OCR saw on the receipt, sorted by category priority

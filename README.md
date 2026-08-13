@@ -7,6 +7,7 @@ Everything happens on the device — no cloud OCR, no third-party receipt APIs, 
 ## Features
 
 - **Camera capture** of a paper receipt (CameraX, downscales to 1600px on the long edge before saving).
+- **Create receipt** (hand receipt, online order, no photo). A second entry point on the main screen wraps the three creation paths (type the details, take a photo, pick from gallery) and converges to the same editor as the camera-greedy "Scan a receipt" flow.
 - **On-device OCR** via Google ML Kit (`com.google.mlkit:text-recognition:16.0.0`). No network round-trip — your receipt never leaves the phone.
 - **Receipt parser** (`ReceiptParser`) that pulls merchant, date, line items, subtotal, tax, tip, total out of the raw OCR text using a hand-tuned heuristic plus regex. On every scan, an auto-pick heuristic (`pickCircledCandidate`) chooses the most likely "circled" number — a visually-emphasised number (yellow highlighter or pen circle) first, then a number on a TOTAL-keyword line, then the largest number in the bottom half of the receipt, then the largest number overall — and the editor pre-fills the amount with that value. The user can still edit the amount as a correction, or hit "Re-pick the total" to pick a different number from the full list of candidates ranked by category (TOTAL → SUBTOTAL → LINE_ITEM + every other number the OCR saw, with a small "(excluded: ...)" tag on the ones the auto-pick filtered out).
 - **Visual signal detection.** When the editor opens, it re-runs OCR with bounding boxes and walks the actual pixels inside each number's bbox to score two "the user marked this on purpose" signals: a yellow highlighter swatch and a pen circle drawn around the number. The two scores become `DetectedNumber` fields, so a highlighted or circled number wins the auto-pick.
@@ -163,7 +164,7 @@ androidscanner/
 │   ├── build.gradle                          # AGP 8.7, minSdk 26, target 34, Java 17
 │   ├── proguard-rules.pro
 │   └── src/main/
-│       ├── AndroidManifest.xml               # 11 activities
+│       ├── AndroidManifest.xml               # 12 activities
 │       ├── assets/merchants.json             # ~100 US merchants, aliases, weights, categories
 │       ├── java/com/example/receipttracker/
 │       │   ├── ReceiptTrackerApp.java         # Logger + DB init; pre-loads MerchantClassifier

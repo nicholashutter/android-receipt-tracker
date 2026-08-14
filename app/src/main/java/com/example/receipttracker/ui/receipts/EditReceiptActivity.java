@@ -98,6 +98,10 @@ public class EditReceiptActivity extends AppCompatActivity {
 
     private TextView tvRawText;
 
+    private TextView tvBudgetName;
+
+    private View sectionBudget;
+
     private MaterialButton btnSave;
 
     private MaterialButton btnDelete;
@@ -105,6 +109,10 @@ public class EditReceiptActivity extends AppCompatActivity {
     private MaterialButton btnAddToBudget;
 
     private MaterialButton btnRePickTotal;
+
+    private MaterialButton btnChangeBudget;
+
+    private MaterialButton btnRemoveBudget;
 
 
     private long existingId = -1;
@@ -172,6 +180,10 @@ public class EditReceiptActivity extends AppCompatActivity {
 
         tvRawText = findViewById(R.id.tv_raw_text);
 
+        tvBudgetName = findViewById(R.id.tv_budget_name);
+
+        sectionBudget = findViewById(R.id.section_budget);
+
         btnSave = findViewById(R.id.btn_save);
 
         btnDelete = findViewById(R.id.btn_delete);
@@ -179,6 +191,10 @@ public class EditReceiptActivity extends AppCompatActivity {
         btnAddToBudget = findViewById(R.id.btn_add_to_budget);
 
         btnRePickTotal = findViewById(R.id.btn_repick_total);
+
+        btnChangeBudget = findViewById(R.id.btn_change_budget);
+
+        btnRemoveBudget = findViewById(R.id.btn_remove_budget);
     }
 
 
@@ -284,6 +300,10 @@ public class EditReceiptActivity extends AppCompatActivity {
 
         btnAddToBudget.setOnClickListener(v -> showAddToBudgetDialog());
 
+        btnChangeBudget.setOnClickListener(v -> showAddToBudgetDialog());
+
+        btnRemoveBudget.setOnClickListener(v -> onRemoveBudgetClicked());
+
         btnRePickTotal.setOnClickListener(v -> showRePickDialog());
     }
 
@@ -293,11 +313,18 @@ public class EditReceiptActivity extends AppCompatActivity {
         // paired bank transaction and removes the photo file).
         btnDelete.setVisibility(View.VISIBLE);
 
-        // Show the "Add to budget" button for existing receipts. We
-        // reveal it here (on the main thread) so a second pass through
-        // onCreate() after rotation still shows the button even if the
-        // DB load races with the user.
-        btnAddToBudget.setVisibility(View.VISIBLE);
+        // The legacy "Add to budget" button is replaced by the
+        // Budget section (which has its own Change/Remove buttons) for
+        // existing receipts. Hide it here so the two paths don't both
+        // show. For new receipts, btnAddToBudget stays gone by default.
+        btnAddToBudget.setVisibility(View.GONE);
+
+        // Reveal the budget section for existing receipts even before
+        // the DB load completes (so a quick tap of the Change button
+        // works without a race). The async DB load below will replace
+        // the placeholder with the actual budget name.
+        sectionBudget.setVisibility(View.VISIBLE);
+        showBudget(null);
 
         // Load existing receipt from DB on the disk executor.
         exec.diskIO().execute(() -> {
@@ -310,6 +337,10 @@ public class EditReceiptActivity extends AppCompatActivity {
                 }
 
                 bindExistingReceipt(receipt);
+
+                if (receipt.budgetId != null) {
+                    loadAndShowBudget(receipt.budgetId);
+                }
             });
         });
     }
@@ -543,6 +574,64 @@ public class EditReceiptActivity extends AppCompatActivity {
                 }
             });
         });
+    }
+
+
+    // ---------- budget display ----------
+
+    /**
+     * Refreshes the budget section for a loaded existing receipt. The
+     * budget is loaded async because the activity-load path is already
+     * on the disk executor; we don't want to block on a second DB hit.
+     * The new-receipt path never shows the budget section — there's no
+     * row to link to until the user saves.
+     */
+    private void loadAndShowBudget(long budgetId) {
+        if (budgetId <= 0) {
+            showBudget(null);
+            return;
+        }
+
+        exec.diskIO().execute(() -> {
+            final Budget budget = AppDatabase.get(EditReceiptActivity.this)
+                    .budgetDao().getById(budgetId);
+            runOnUiThread(() -> showBudget(budget));
+        });
+    }
+
+
+    /**
+     * Renders the budget section for a (possibly null) budget. Hides the
+     * "Change"/"Remove" pair cleanly when no budget is set, so the user
+     * sees the empty state without an awkward Remove button they can't
+     * press.
+     */
+    private void showBudget(Budget budget) {
+        if (budget == null) {
+            tvBudgetName.setText("(no budget — tap Change to add one)");
+
+            btnChangeBudget.setText("Add to budget");
+            btnRemoveBudget.setVisibility(View.GONE);
+        } else {
+            tvBudgetName.setText(budget.name);
+
+            btnChangeBudget.setText("Change budget");
+            btnRemoveBudget.setVisibility(View.VISIBLE);
+        }
+    }
+
+
+    /**
+     * User pressed the "Remove" link on the budget section. We update
+     * the in-memory {@code pendingBudgetId} to a sentinel and resave,
+     * so the next save persists budgetId=null. Skipping save entirely
+     * and writing through here would also work but means a second
+     * DB write per gesture; piggy-backing on the next save keeps it to one.
+     */
+    private void onRemoveBudgetClicked() {
+        Logger.i("Edit", "onRemoveBudgetClicked: marking pending budget as null");
+        pendingBudgetId = null;
+        saveReceipt();
     }
 
 

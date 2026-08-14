@@ -39,6 +39,10 @@ import com.example.receipttracker.R;
 
 import com.example.receipttracker.data.AppDatabase;
 
+import com.example.receipttracker.data.Budget;
+
+import com.example.receipttracker.data.BudgetDao;
+
 import com.example.receipttracker.data.Receipt;
 
 import com.example.receipttracker.data.ReceiptDao;
@@ -56,7 +60,11 @@ import java.io.File;
 
 import java.util.Collections;
 
+import java.util.HashMap;
+
 import java.util.List;
+
+import java.util.Map;
 
 
 /**
@@ -86,10 +94,16 @@ public class ReceiptListActivity extends AppCompatActivity {
     private View emptyView;
     private ReceiptAdapter adapter;
     private ReceiptDao dao;
+    private BudgetDao budgetDao;
     private final AppExecutors executors = AppExecutors.get();
 
     // MUTABLE: toggled in menu.
     private boolean showDeleted = false;
+
+    // MUTABLE: rebuilt every time the budget list changes; the adapter
+    // reads from this to render the budget-name line on each row.
+    // Empty when no budgets exist (or none are linked).
+    private final Map<Long, String> budgetNamesById = new HashMap<>();
 
 
     @Override
@@ -104,11 +118,35 @@ public class ReceiptListActivity extends AppCompatActivity {
         adapter = new ReceiptAdapter();
         recyclerView.setAdapter(adapter);
         dao = AppDatabase.get(this).receiptDao();
+        budgetDao = AppDatabase.get(this).budgetDao();
 
         // The user can toggle "show deleted" via the menu. In both
         // modes we re-observe the right query and let the adapter show
         // the right empty state.
         observeCurrent();
+
+        // Two-way visibility: each receipt row shows the budget it's
+        // linked to (if any). We keep a name lookup map in memory and
+        // rebuild it whenever budgets change — cheaper than re-querying
+        // the Budget table once per row.
+        budgetDao.getAllActiveLive().observe(this, this::rebuildBudgetNames);
+    }
+
+
+    private void rebuildBudgetNames(List<Budget> budgets) {
+        budgetNamesById.clear();
+
+        if (budgets == null) {
+            adapter.notifyDataSetChanged();
+
+            return;
+        }
+
+        for (Budget budget : budgets) {
+            budgetNamesById.put(budget.id, budget.name);
+        }
+
+        adapter.notifyDataSetChanged();
     }
 
 
@@ -251,6 +289,7 @@ public class ReceiptListActivity extends AppCompatActivity {
             holder.merchant.setText(merchantLabel);
             holder.date.setText(MoneyUtils.formatDate(receipt.dateMillis));
             holder.amount.setText(MoneyUtils.format(receipt.amount));
+            bindBudgetLabel(holder, receipt);
 
             final boolean isDeleted = receipt.deletedAt != null;
             if (isDeleted) {
@@ -263,6 +302,36 @@ public class ReceiptListActivity extends AppCompatActivity {
 
             bindThumbnail(holder, receipt);
             bindRowClick(holder, receipt, isDeleted);
+        }
+
+
+        /**
+         * Renders the budget-name line for a row. Two-way visibility:
+         * the receipt list shows the budget the receipt belongs to, so
+         * the user can see the link without drilling into the receipt
+         * editor or hunting through the budget list. Hides the line
+         * when the receipt isn't linked to a budget (or when the linked
+         * budget was soft-deleted and so isn't in our name map).
+         */
+        private void bindBudgetLabel(ReceiptViewHolder holder, Receipt receipt) {
+            final Long budgetId = receipt.budgetId;
+
+            if (budgetId == null) {
+                holder.budget.setVisibility(View.GONE);
+
+                return;
+            }
+
+            final String budgetName = budgetNamesById.get(budgetId);
+
+            if (budgetName == null) {
+                holder.budget.setVisibility(View.GONE);
+
+                return;
+            }
+
+            holder.budget.setText(budgetName);
+            holder.budget.setVisibility(View.VISIBLE);
         }
 
 
@@ -378,6 +447,7 @@ public class ReceiptListActivity extends AppCompatActivity {
             final ImageView thumb;
             final TextView merchant;
             final TextView date;
+            final TextView budget;
             final TextView status;
             final TextView amount;
 
@@ -386,6 +456,7 @@ public class ReceiptListActivity extends AppCompatActivity {
                 thumb = itemView.findViewById(R.id.iv_thumb);
                 merchant = itemView.findViewById(R.id.tv_merchant);
                 date = itemView.findViewById(R.id.tv_date);
+                budget = itemView.findViewById(R.id.tv_budget);
                 status = itemView.findViewById(R.id.tv_status);
                 amount = itemView.findViewById(R.id.tv_amount);
             }

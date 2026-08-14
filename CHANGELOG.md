@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Added
+- **Two-way budget / receipt visibility.** Each receipt list row
+  shows the budget the receipt is linked to (or hides the line if
+  it isn't linked to any), and the budget-detail screen already
+  shows the receipts on that budget. Together that means the
+  relationship is visible from either direction without having to
+  drill into the editor.
+  - **Schema** — no change. `Receipt.budgetId` was already indexed
+    and null-friendly; the visibility is just a UI layer over the
+    existing data.
+  - **`ReceiptListActivity`** — observes `BudgetDao.getAllActiveLive()`
+    and keeps a `Map<Long, String>` of budget IDs to names. The
+    adapter reads from the map to render a small "in budget X" line
+    (with the budget icon, indigo-on-white) on each row. The line
+    is hidden when the receipt isn't linked, or when the linked
+    budget was soft-deleted.
+  - **`BudgetDetailActivity.LinkedReceiptsAdapter`** — the per-row
+    budget label is now hidden in the budget-detail context, where
+    every row belongs to the same budget by construction (no
+    redundancy with the screen header).
+  - **`item_receipt.xml`** — new `tv_budget` TextView with the
+    budget icon, `bold` weight, indigo `budget_dark` text. Hidden
+    by default; the adapter flips it on.
 - **Parent / child budget hierarchy.** A budget can now be a
   top-level "parent" (default, NULL `parentId`) or a "sub-budget" /
   leaf (non-null `parentId` pointing at the parent). Use case: a

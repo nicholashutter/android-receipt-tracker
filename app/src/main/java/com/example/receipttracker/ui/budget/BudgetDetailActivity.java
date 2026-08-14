@@ -548,6 +548,11 @@ public class BudgetDetailActivity extends AppCompatActivity {
             final String date = MoneyUtils.formatDate(receipt.dateMillis);
             holder.date.setText(date);
 
+            // We're already inside the budget-detail screen, so the
+            // "in budget X" line is redundant — every row in this
+            // adapter is for the current budget by construction.
+            holder.budget.setVisibility(View.GONE);
+
             final String status;
             if (receipt.matchGroupId == null) {
                 status = STATUS_UNMATCHED;
@@ -572,6 +577,7 @@ public class BudgetDetailActivity extends AppCompatActivity {
             final TextView merchant;
             final TextView amount;
             final TextView date;
+            final TextView budget;
             final TextView status;
 
             ReceiptViewHolder(View itemView) {
@@ -579,6 +585,7 @@ public class BudgetDetailActivity extends AppCompatActivity {
                 merchant = itemView.findViewById(R.id.tv_merchant);
                 amount = itemView.findViewById(R.id.tv_amount);
                 date = itemView.findViewById(R.id.tv_date);
+                budget = itemView.findViewById(R.id.tv_budget);
                 status = itemView.findViewById(R.id.tv_status);
             }
         }
